@@ -68,8 +68,8 @@ From the root of the repository you want to document:
 | `--only <module>` | Redo one module card and what references it. |
 | `--publish <target>` | After the docs pass verification, publish them: `zensical`, `vitepress`, `docsify`, `gitlab-wiki` or `github-wiki`. |
 
-You can also just ask: "document this repo" or "generate the project docs".
-The only checkpoint with you is the coverage plan, before the deep exploration.
+documake never runs on its own: the skill sets `disable-model-invocation`, so
+Claude only runs it when you type `/documake`. The only checkpoint with you is the coverage plan, before the deep exploration.
 
 Publishing details (GitHub Pages, GitLab Pages, wikis, CI templates) are in
 [`references/deploy.md`](skills/documake/references/deploy.md).

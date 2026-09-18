@@ -6,6 +6,7 @@ compatibility: Requires Python 3.12+ (stdlib only) and git. Designed for Claude 
 metadata:
   author: reiarseni
   version: "1.0.0"
+disable-model-invocation: true
 argument-hint: "[repo path] [--lang es|en|<code>] [--publish zensical|vitepress|docsify|gitlab-wiki|github-wiki] [--update] [--only <module>]"
 allowed-tools: Read Glob Grep Bash Agent Write Edit AskUserQuestion
 ---
