@@ -47,9 +47,23 @@ Python standard library and detect paths rather than assuming them.
 | `scripts/measured.py` | Parse pasted context and usage output; reconcile against estimates |
 | `scripts/portfolio.py` | Usage, overlap, stack coverage, and a classified plan |
 | `scripts/remediate.py` | Backup, reversal manifest, mechanisms, guardrails, logs |
+| `scripts/units.py` | Renders every token figure in thousands; shared by the other four |
 
 Each takes `--self-test`, which runs recorded fixtures. Run them when changing
 a script; they cover every refusal path.
+
+### Report every token figure in thousands
+
+A run mixes figures three orders of magnitude apart — a 314-token agent block
+against a 287k session — and in raw digits they do not compare at a glance.
+So **every token figure you report is written in thousands**: `29.7k`, `2.8k`,
+`0.65k`, never `29667` or `653`. This holds in prose, in tables and in totals.
+
+The scripts already do the conversion: each cost block in their JSON carries a
+`display` field beside its `value`, and a bare token integer gains a
+`<name>_display` next to it. Quote `display`; never re-render `value` by hand.
+Counts, percentages and byte sizes are not token figures and stay as they are —
+68 skills is 68 skills, not `0.07k`.
 
 ## References
 

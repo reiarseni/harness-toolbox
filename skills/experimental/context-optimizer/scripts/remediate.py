@@ -36,6 +36,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from units import annotate
+
 PROTECTED_KINDS = {"instructions", "hook", "mcp-server"}
 PLUGIN_CACHE_MARKER = os.path.join("plugins", "cache")
 # No default retention. Almost every installation has a different age profile:
@@ -1062,7 +1064,7 @@ def main(argv: list[str] | None = None) -> int:
                 "basis": "measured" if client_version else "unavailable",
                 "method": "claude --version",
             }
-            print(json.dumps((plan), indent=2))
+            print(json.dumps(annotate(plan), indent=2))
         elif args.command == "probe":
             inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
             entry = next(e for e in inventory["entries"] if e["name"] == args.entry)
@@ -1080,16 +1082,17 @@ def main(argv: list[str] | None = None) -> int:
                                 client_version=client_version)
             result["next_step"] = ("Restart Claude Code, run the context breakdown again and "
                                    "confirm the saving before applying the rest.")
-            print(json.dumps((result), indent=2))
+            print(json.dumps(annotate(result), indent=2))
         elif args.command == "apply":
             plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
             plan["excluded"] = [n for n in args.exclude.split(",") if n]
             config = Path(args.config) if args.config else Path.home() / ".claude"
             approved = {b for b in args.approve.split(",") if b}
             verified = {m for m in args.verified.split(",") if m}
-            print(json.dumps(apply_plan(plan, config, approved=approved,
-                                        verified=verified, confirm=args.confirm,
-                                        client_version=client_version), indent=2))
+            applied = apply_plan(plan, config, approved=approved,
+                                 verified=verified, confirm=args.confirm,
+                                 client_version=client_version)
+            print(json.dumps(annotate(applied), indent=2))
         elif args.command == "logs":
             config = Path(args.config) if args.config else Path.home() / ".claude"
             scan = scan_logs(config)
@@ -1104,7 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
                     usage_report=Path(args.usage_report) if args.usage_report else None,
                     confirm=args.confirm,
                 )
-                print(json.dumps((report), indent=2))
+                print(json.dumps(annotate(report), indent=2))
                 return 0
             if args.retention_days is None:
                 if args.confirm:
@@ -1112,7 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
                         "no retention window chosen. Review the options below and pass "
                         "--retention-days explicitly; there is no default."
                     )
-                print(json.dumps((survey_retention_options(config, scan=scan)), indent=2))
+                print(json.dumps(annotate(survey_retention_options(config, scan=scan)), indent=2))
                 return 0
             survey = survey_logs(config, args.retention_days, scan)
             report = {k: v for k, v in survey.items() if k != "files"}
@@ -1122,7 +1125,7 @@ def main(argv: list[str] | None = None) -> int:
                     usage_report=Path(args.usage_report) if args.usage_report else None,
                     confirm=args.confirm,
                 )
-            print(json.dumps((report), indent=2))
+            print(json.dumps(annotate(report), indent=2))
         else:
             parser.print_help()
             return 1

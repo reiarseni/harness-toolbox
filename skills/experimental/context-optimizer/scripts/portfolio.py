@@ -26,6 +26,8 @@ import sys
 import time
 from pathlib import Path
 
+from units import annotate, thousands
+
 # A bare name matches far too much: "do" would hit "/doctor" and "/docs".
 # An invocation is a slash command, a Skill() call, or a skill field in a log.
 #
@@ -547,8 +549,8 @@ def assess_plugins(entries: list[dict], plugin_counters: dict[str, dict],
             "also_lost": losses,
             "mechanism": "whole plugin only, via /plugin or enabledPlugins",
             "trade": (
-                f"Disabling {name} recovers at most {row['skill_cost']} tokens "
-                f"({row['unused_cost']} of it from skills nothing has invoked)"
+                f"Disabling {name} recovers at most {thousands(row['skill_cost'])} tokens "
+                f"({thousands(row['unused_cost'])} of it from skills nothing has invoked)"
                 + (f" and costs {'; '.join(losses)}" if losses else " and costs nothing else")
                 + f". {verdict}."
             ),
@@ -1062,7 +1064,7 @@ def main(argv: list[str] | None = None) -> int:
               "plugins": plugins, "classification": classified}
 
     if args.json:
-        print(json.dumps(report, indent=2))
+        print(json.dumps(annotate(report), indent=2))
         return 0
 
     print(f"stack: {', '.join(coverage['stack']['tags']) or 'none detected'} "

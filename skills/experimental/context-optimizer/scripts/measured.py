@@ -24,6 +24,8 @@ import re
 import sys
 from pathlib import Path
 
+from units import annotate, thousands
+
 # "2.4k", "653", "~180", "12.6k tokens", "1.2m", "100,628"
 #
 # A comma is a decimal point in "2,4k" and a thousands separator in "100,628",
@@ -685,7 +687,7 @@ def self_test() -> int:
         return 1
     print("self-test: all checks passed")
     print(f"  context categories parsed : {context['parsed_category_count']}")
-    print(f"  measured startup total    : {context['startup_total']['value']} ({context['startup_total']['basis']})")
+    print(f"  measured startup total    : {thousands(context['startup_total']['value'])} ({context['startup_total']['basis']})")
     print(f"  usage entries parsed      : {usage['parsed_entry_count']}")
     print(f"  memory deviation          : {memory['deviation_percent']}% ({memory['direction']})")
     print(f"  no-data fallback mode     : {fallback['mode']}")
@@ -711,11 +713,11 @@ def main(argv: list[str] | None = None) -> int:
         return self_test()
 
     if args.command == "context":
-        print(json.dumps((parse_context(read_source(args.source or "-"))), indent=2))
+        print(json.dumps(annotate(parse_context(read_source(args.source or "-"))), indent=2))
     elif args.command == "usage":
-        print(json.dumps((parse_usage(read_source(args.source or "-"))), indent=2))
+        print(json.dumps(annotate(parse_usage(read_source(args.source or "-"))), indent=2))
     elif args.command == "skills":
-        print(json.dumps((parse_skills(read_source(args.source or "-"))), indent=2))
+        print(json.dumps(annotate(parse_skills(read_source(args.source or "-"))), indent=2))
     elif args.command == "merge":
         if not args.inventory:
             parser.error("merge needs --inventory")
@@ -728,13 +730,13 @@ def main(argv: list[str] | None = None) -> int:
             print("No skill rows could be read from that paste; nothing was merged. "
                   "Report this rather than continuing as if built-ins had been seen.",
                   file=sys.stderr)
-        print(json.dumps((inject_skills(inventory, rows)), indent=2))
+        print(json.dumps(annotate(inject_skills(inventory, rows)), indent=2))
     elif args.command == "reconcile":
         if not args.inventory:
             parser.error("reconcile needs --inventory")
         inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
         context = parse_context(Path(args.context).read_text(encoding="utf-8")) if args.context else None
-        print(json.dumps((reconcile(inventory, context)), indent=2))
+        print(json.dumps(annotate(reconcile(inventory, context)), indent=2))
     else:
         parser.print_help()
         return 1

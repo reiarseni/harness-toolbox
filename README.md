@@ -90,9 +90,10 @@ not only what each entry costs, but whether it earns its place.
 
 What it reports:
 
-- **Cost** per entry and per source, each figure labelled *measured* or
-  *estimated* — and the fixed floor that no change can reduce, stated up front
-  so the remaining number is read correctly.
+- **Cost** per entry and per source, every figure in thousands of tokens
+  (`29.7k`, `0.65k`) and labelled *measured* or *estimated* — and the fixed
+  floor that no change can reduce, stated up front so the remaining number is
+  read correctly.
 - **Overlap**: entries that duplicate each other, especially across levels,
   where a user skill pays rent for something already built in.
 - **Usage**: real invocations, not mentions. A bare search for a skill called
@@ -152,7 +153,7 @@ skills/experimental/           skills that are not approved yet
 └── context-optimizer/
     ├── SKILL.md      procedure and guardrails
     ├── references/   loaded on demand (measurement, portfolio, mechanisms, safety)
-    ├── scripts/      inventory, measured, portfolio, remediate — each with --self-test
+    ├── scripts/      inventory, measured, portfolio, remediate, units — each with --self-test
     └── tests/        pressure scenarios for the guardrails
 ```
 

@@ -25,6 +25,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from units import annotate
+
 CHARS_PER_TOKEN = 4
 FRONTMATTER = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.S)
 IMPORT_LINE = re.compile(r"^@([^\s]+)\s*$", re.M)
@@ -590,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
     inventory = build_inventory(config, project, measure_hooks=args.measure_hooks)
 
     if args.json:
-        print(json.dumps(inventory, indent=2))
+        print(json.dumps(annotate(inventory), indent=2))
         return 0
 
     print(f"config: {inventory['paths']['config_dir']}")
