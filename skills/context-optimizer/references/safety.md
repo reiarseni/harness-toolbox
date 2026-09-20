@@ -74,12 +74,39 @@ invoke an entry by name.
 
 *Covers: "partial approval of a block", "an ambiguous answer", "an all-or-nothing mechanism".*
 
+## A guardrail guards the file that gets written
+
+A refusal is only as good as its target. Check the path the mechanism **writes
+to**, never the path the entry lives at. They are the same for a frontmatter
+edit and different for everything else — a whole approved block was once refused
+over a file nobody was touching (`case-studies.md`).
+
+The corollary bites in the other direction too, and it is the more dangerous
+one. Every guardrail that protects an entry's own file must run for **every**
+mechanism that touches an entry's own file, not just the one it was written
+alongside. `assert_repo_safe` lived inside the frontmatter branch alone, which
+left the archive mechanism free to move a tracked agent out of a dirty
+repository — the exact loss the guardrail exists to prevent.
+
+When you add a mechanism, ask which guardrails its write needs, not which ones
+the mechanism next to it happens to call.
+
+**When a refusal looks wrong, it is still a stop.** Do not route around it. Say
+which guardrail fired, which file it was protecting, which file would actually
+have been written, and let the user decide. A false positive that a user
+overrides knowingly is an incident they chose; one the model works around
+quietly is an incident they discover later. If they do choose to proceed by
+hand, reproduce the full ceremony — backup first, manifest with the exact undo
+command — and record in the manifest that the script refused and why.
+
+*Covers: "a guardrail fires on the wrong target", "the user overrides a refusal".*
+
 ## Archiving
 
-Never overwrite an entry that already exists in the archive directory. On the
-reference installation `refactoring-specialist.md` existed in both the active
-and the archive directory; a move would have destroyed the archived copy.
-Refuse and let the user resolve the collision.
+Never overwrite an entry that already exists in the archive directory. A name
+existing in both the active and the archive directory is common — it is what a
+previous run leaves behind — and a move would destroy the archived copy. Refuse
+and let the user resolve the collision.
 
 When the entry is a symlink, remove the link. Never delete the file it points
 at — that file belongs to another repository.
@@ -93,9 +120,27 @@ deleting first destroys the evidence the analysis depends on. The cleanup
 refuses to run without a usage report.
 
 There is no default retention window. Show what each window would free and let
-the user choose. On the reference installation 30 days freed 2.6 MB while 14
-days freed 618 MB — a default would have been either useless or far more
-destructive than the user expected.
+the user choose. Age profiles differ wildly between machines, so any default is
+either useless or far more destructive than the user expected.
+
+**A date cutoff cannot tell what a log is.** A machine-generated transcript
+nobody will ever reopen and a session worth resuming are not mixed evenly, and
+the window's single number hides that. `remediate.py logs` classifies every file
+from its path — `session`, `subagent-transcript`, `tool-directory` — and reports
+each window broken down by category alongside a `machine_generated_only` option
+that has no date cutoff at all.
+
+**That targeted option is usually the right recommendation**, and it is the one
+the windows will not surface on their own: on one machine it recovered 91
+percent of the log files while every window that freed comparable space also
+deleted hundreds of real sessions (`case-studies.md`). Say so explicitly rather
+than leaving the user to infer it from the table.
+
+Run it with `--machine-generated-only`. Afterwards, confirm that the plugin's
+own store — the distilled data, not the transcripts — is untouched.
+
+Log deletion is the one step in this skill with **no entry in the reversal
+manifest**: no backup of a log is taken. State that before it runs, not after.
 
 Always state that deleted sessions can no longer be resumed.
 

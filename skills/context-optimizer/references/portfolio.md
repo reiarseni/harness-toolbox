@@ -5,6 +5,55 @@ whether the entry earns its place. Three questions do.
 
 ## 1. Is it actually invoked?
 
+**Read the client's counter first, and prefer it to everything else.**
+`~/.claude.json` holds `skillUsage`: a map of `{name: {usageCount,
+lastUsedAt}}` the client maintains itself. It is exact and it costs one file
+read. Every technique below exists only for what the counter does not cover,
+such as agents.
+
+This was learnt expensively: a run that scraped logs instead recommended
+suppressing thirteen entries the counter showed had been used, and eight were
+cut before the counter was found (`case-studies.md`).
+
+Three properties decide how the counter must be read, and the code depends on
+each of them:
+
+- **Absence is the signal, not zero.** The client writes a key on first use and
+  never writes a zero. `lookup_counter` therefore returns `None` for an absent
+  key, and the report says *"no entry in the client skillUsage counter"* rather
+  than *"0"*. A present zero would be an anomaly worth reporting, not acting on.
+- **Silence needs a horizon.** "Never invoked" means nothing until you can say
+  over how long. `numStartups`, from the same file, is that horizon, and it goes
+  into the method string: *"no entry … across 664 recorded startups"*.
+- **A rename leaves the old key behind**, holding all the history. When an entry
+  has no counter but a near-identical key exists, that is a conflicting signal:
+  the entry is kept, the near-miss is reported, and the user is asked. It is
+  never counted as this entry's own usage.
+
+**Namespaces are never crossed.** Matching a counter key by its unqualified tail
+made the bare name `do` inherit `claude-mem:do`'s invocations. Matching is exact
+first, then on the whole normalised key, never on the part after the colon.
+
+### The audit contaminates its own corpus
+
+The session running the audit writes a log like any other, and that log names
+every entry under discussion — repeatedly, including in the sentence proposing
+to cut it. Scrape it and the audit becomes its own evidence: one synced skill
+went from `invocations=0` to `invocations=1` between two passes purely because
+the intervening conversation had discussed it.
+
+`load_history` has two defences, in order of preference:
+
+1. **The session id**, passed as `--session-id` or read from
+   `CLAUDE_SESSION_ID`. This is exact and excludes only the audit's own log.
+2. **A fifteen-minute window**, the fallback when no id is available. It is
+   blunt — it also discards legitimate recent sessions — but that is the safer
+   direction to err in.
+
+If you scrape by hand, exclude the current session explicitly, and treat any
+count of exactly 1 on an entry you have been discussing as noise until proven
+otherwise.
+
 A bare search for a name is worthless. The name of every registered entry
 appears in the prompt of every session, so it appears in every log.
 
@@ -14,16 +63,18 @@ Match invocations, not mentions:
 - `Skill(<name>)` or `"skill": "<name>"` — it was invoked as a skill
 - `/<name>` with a word boundary on both sides
 
-Two failures seen on the reference installation, in opposite directions:
+Two failures seen in practice, in opposite directions:
 
-- An undelimited search for `do` returned 163 hits. All of them were `/doctor`
-  and `/docs`. The real count was 3.
+- An undelimited search for a short name returned over a hundred hits, all of
+  them longer names that merely started with it.
 - An ecosystem tool inspected only the five most recent session logs and
-  reported `release-plan` as unused. The prompt history held 212 mentions.
+  reported a heavily used skill as unused.
 
-So: delimit the match, and widen the window. Use the usage report as the
-primary measured signal and the full prompt history as the long-term one. When
-they disagree, say so rather than picking the convenient one.
+So: delimit the match, and widen the window. The walk is recursive, so subagent
+transcripts are reached too — the same set of files every other log survey in
+this skill counts. Use the usage report as the primary measured signal and the
+full prompt history as the long-term one. When they disagree, say so rather than
+picking the convenient one.
 
 *Covers: "a name that prefixes other names", "an insufficient analysis window",
 "an entry unused in every source".*
@@ -51,10 +102,9 @@ in the plan.
 ## 3. Does it match the work?
 
 Detect the stack from marker files and declared dependencies, at the project
-root **and one level down**. A monorepo keeps its manifests in subdirectories:
-scanning only the root of the reference project found `docker` and `gitlab` and
-missed Laravel, React, Vite, Tailwind and TypeScript entirely, which in turn
-mislabelled two frontend skills as unrelated.
+root **and one level down**. A monorepo keeps its manifests in subdirectories,
+and a root-only scan misses most of the stack — which then mislabels the skills
+that cover it as unrelated.
 
 Then report three things:
 
@@ -70,6 +120,7 @@ Then report three things:
 | Situation | Action |
 |---|---|
 | Already costs nothing at startup | keep |
+| No counter, but a near-identical key exists | **keep**, and report the possible rename |
 | Sole cover of a stack tag, no invocations | **keep**, and report the conflict |
 | Invoked, unrelated to the stack | keep — practice beats the profile |
 | No invocations, unrelated to the stack | suppress |
@@ -79,6 +130,17 @@ Then report three things:
 Attach the evidence to every row: invocation count, attribution share if
 available, and the reason. A recommendation without evidence is an opinion, and
 this skill has no standing to offer opinions about the user's work.
+
+## 4. What does a whole plugin cost?
+
+A plugin skill has no individual mechanism, so the only question worth asking
+about one is the plugin-wide question. `portfolio.py` answers it per plugin,
+from the client's own `pluginUsage` counter: the startup cost of its skills, how
+much of that comes from skills nothing has invoked, the hooks and MCP servers
+that would go with it, and how many times the plugin has been used.
+
+Present the trade as one sentence with all four numbers in it. It is always
+propose-only.
 
 When the signals genuinely conflict, say there is no clear answer. Do not
 invent a preference to look decisive.

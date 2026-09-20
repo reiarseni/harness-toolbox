@@ -4,7 +4,7 @@ description: Audits and optimizes Claude Code startup context — measures what 
 license: MIT
 metadata:
   author: reiarseni
-  version: "1.0"
+  version: "1.1"
 disable-model-invocation: true
 allowed-tools: Read Write Edit Bash Glob Grep AskUserQuestion
 ---
@@ -24,12 +24,17 @@ Two things separate this from counting bytes in a skills directory:
 ## Say this first
 
 A large part of startup context cannot be cut by anything here. The system
-prompt and the built-in tools are a fixed floor — roughly 15k of a 30.5k
-startup on the machine this was built against.
+prompt and the built-in tools are a fixed floor, and on the installations
+recorded in `references/case-studies.md` it was roughly half the startup total.
+Measure it; never carry a figure over from another machine.
 
-Tell the user the floor before showing any plan. A saving of 7k looks like
-failure next to zero and like near-total success next to the floor. The second
-framing is the true one.
+Tell the user the floor before showing any plan. A saving looks like failure
+next to zero and like near-total success next to the floor. The second framing
+is the true one.
+
+State the **maneuverable remainder** as its own figure, in its own sentence —
+"<remainder> is in play" — and report every later saving against that, not
+against the total.
 
 ## Scripts
 
@@ -56,28 +61,47 @@ Read a reference when the procedure reaches it, not before.
 | `references/portfolio.md` | Judging usage, overlap and stack coverage |
 | `references/mechanisms.md` | Choosing how to cut a specific entry |
 | `references/safety.md` | Before the first write of a run |
+| `references/case-studies.md` | Only to see the evidence behind a rule — never to quote a figure |
 
 ---
 
 ## Phase 1 — Ask for measured data
 
-Two numbers cannot be read from disk: the context breakdown and the usage
-attribution. Both come from slash commands the user runs.
+Three things cannot be read from disk, and all three come from slash commands
+the user runs. Ask for all of them **once, together**, before anything else:
 
-Ask for them once, plainly:
+> To work from measured numbers rather than estimates, paste the output of
+> `/context`, `/usage` and `/skills`. Without them I can still run, but every
+> figure will be an estimate and estimates come in low.
 
-> To work from measured numbers rather than estimates, paste the output of the
-> context breakdown and the usage report. Without them I can still run, but
-> every figure will be an estimate and estimates come in low.
+Each earns its place:
+
+- **`/context`** — the token cost per category, and the floor.
+- **`/usage`** — attribution per skill, agent, plugin and MCP server.
+- **`/skills`** — the per-entry source, cost and lock status. This is the one
+  that is easiest to skip and most expensive to skip. It is the only sighting of
+  **built-in skills**, which exist nowhere on disk and are the category
+  `skillOverrides` is most used on. It is also the only authority on what is
+  **locked**: a locked entry cannot be cut by any mechanism here, and presenting
+  a block of them, taking the user's approval, and discovering it two restarts
+  later is the worst failure this skill has had.
+
+Also ask for the **entry counts**, not just the tokens — "68 skills · 9k
+tokens". The count is the harder number and it is what will later identify which
+block of an applied plan actually worked.
 
 If the user declines, continue. Do not ask twice, and do not block.
 
-Save whatever they paste to a file and parse it:
+Save whatever they paste and parse it:
 
 ```bash
 python3 scripts/measured.py context pasted-context.txt > context.json
-python3 scripts/measured.py usage pasted-usage.txt > usage.json
+python3 scripts/measured.py usage   pasted-usage.txt   > usage.json
+python3 scripts/measured.py skills  pasted-skills.txt  > skills.json
 ```
+
+If everything landed in one file, pass that file to all three: each parser
+ignores what is not its own.
 
 Read `references/measurement.md` before labelling anything.
 
@@ -92,27 +116,49 @@ hooks that inject text, to measure what they actually emit. Hooks are
 third-party programs and may start background services. The output is measured
 and discarded.
 
-Then reconcile:
+Then fold in the skill listing, which is what puts built-in skills into the
+inventory and marks what the client reports as locked:
 
 ```bash
-python3 scripts/measured.py reconcile --inventory inventory.json --context context.json
+python3 scripts/measured.py merge --inventory inventory.json --skills skills.json > merged.json
+```
+
+Use `merged.json` from here on. Then reconcile:
+
+```bash
+python3 scripts/measured.py reconcile --inventory merged.json --context context.json
 ```
 
 Report the deviation between estimate and measurement when both exist. The
 measurement is always the authoritative one.
 
+Compare categories against themselves across measurements, **never totals**.
+The breakdown's own lines move by thousands of tokens between readings of one
+session, for reasons outside this skill's control.
+
 ## Phase 3 — Portfolio
 
 ```bash
-python3 scripts/portfolio.py --inventory inventory.json --usage usage.json --json > portfolio.json
+python3 scripts/portfolio.py --inventory merged.json --usage usage.json \
+    --session-id "$CLAUDE_SESSION_ID" --json > portfolio.json
 ```
 
-Read `references/portfolio.md` and present three findings:
+Pass the session id when you know it: it stops the audit from reading its own
+transcript and counting the sentence that proposes a cut as evidence for keeping
+the entry.
 
-1. **Unused** — with the evidence window that supports the claim.
+Read `references/portfolio.md` and present four findings:
+
+1. **Unused** — with the evidence window that supports the claim. The client's
+   own counter outranks any log scrape. An entry with no counter but a
+   near-identical key may simply have been renamed; that is a conflict, not a
+   verdict.
 2. **Overlapping** — naming both sides and their levels.
 3. **Coverage** — the detected stack, what covers it, what nothing covers, and
    what matches nothing in it.
+4. **Plugins** — the all-or-nothing trade for each one, already priced: startup
+   cost, recoverable share, hooks and MCP servers that go with it, and the
+   client's recorded usage. State it; never apply it.
 
 When signals conflict — no invocations but sole coverage of a stack tag — say
 so and keep the entry. Never resolve a conflict silently.
@@ -120,13 +166,21 @@ so and keep the entry. Never resolve a conflict silently.
 ## Phase 4 — Plan and approval
 
 ```bash
-python3 scripts/remediate.py plan --inventory inventory.json --classification portfolio.json > plan.json
+python3 scripts/remediate.py plan --inventory merged.json --classification portfolio.json > plan.json
 ```
 
-Present the whole plan ranked by saving, grouped into blocks by origin. For
-each block state the mechanism, whether it is verified on this machine, the
-estimated saving, and — when it applies — that the mechanism also removes the
-ability to invoke those entries by name.
+The plan already drops every entry the client reports as locked, provided the
+listing was merged in Phase 2. If it was not, say so before presenting anything:
+the plan is then guessing at what is reachable.
+
+Present the whole plan ranked by saving, grouped into blocks by origin. For each
+block state the mechanism, the estimated saving, and — when it applies — that
+the mechanism also removes the ability to invoke those entries by name.
+
+State the verification honestly, in the block's own words: `plan.json` carries
+`mechanism_verification` per block, which names the client version the mechanism
+was measured on and the version running here. **A mechanism measured on another
+version is not verified.** It needs a probe, exactly as an unmeasured one does.
 
 Take approval **one block at a time** with AskUserQuestion, and offer to
 exclude individual entries within a block.
@@ -142,12 +196,12 @@ entry whose origin has no working mechanism.
 Read `references/safety.md` first. Every rule there is a refusal, not a
 preference.
 
-For a mechanism not yet verified on this machine, run the probe on a single
-entry:
+For a mechanism not verified on the client version running here, run the probe
+on a single entry:
 
 ```bash
 python3 scripts/remediate.py probe --entry NAME --mechanism M \
-    --inventory inventory.json --confirm
+    --inventory merged.json --confirm
 ```
 
 Then stop and ask the user to restart and re-run the context breakdown. Only
@@ -175,15 +229,27 @@ a usage report.
 python3 scripts/remediate.py logs --config ~/.claude
 ```
 
-That prints what each retention window would free. There is no default. Show
-the table, let the user pick, then:
+That prints what each retention window would free, broken down by what the files
+actually are, plus a `machine_generated_only` figure that has no date cutoff.
+There is no default.
+
+**Read the breakdown before recommending a window.** A date cutoff cannot tell a
+subagent transcript from a session worth resuming, and the targeted cleanup is
+usually the better offer: it frees most of the space and touches no user
+session.
 
 ```bash
+# The targeted cleanup — subagent transcripts and tool directories, any age.
+python3 scripts/remediate.py logs --config ~/.claude --machine-generated-only \
+    --usage-report usage.json --confirm
+
+# Or a window the user chose explicitly.
 python3 scripts/remediate.py logs --config ~/.claude --retention-days N \
     --usage-report usage.json --confirm
 ```
 
-Always state that deleted sessions can no longer be resumed.
+Say **before** it runs that log deletion is the one step with no entry in the
+reversal manifest, and that deleted sessions can no longer be resumed.
 
 ## Phase 7 — Report
 
@@ -215,13 +281,18 @@ in a hurry, or saying it is fine.
   `skillOverrides` key to the same settings file is allowed; the protection is
   per key.
 - **Never write inside a plugin cache.** Updates overwrite it.
-- **A tracked file in a dirty repository is reported, never edited.** Do not
-  stash. Do not create a branch. Resolve symlinks before deciding, because a
-  skill directory often links back into the repository.
+- **A tracked file in a dirty repository is reported, never edited or moved.**
+  Do not stash. Do not create a branch. This holds for every mechanism that
+  touches an entry's own file, archiving included. Resolve symlinks before
+  deciding, because a skill directory often links back into the repository.
 - **Never overwrite an archived entry.** Refuse on a name collision.
 - **Never delete the target of a symlink.** Remove the link only.
 - **An unverified mechanism touches one entry, then stops** until the user
-  confirms a measured saving.
+  confirms a measured saving. A mechanism measured on a different client
+  version counts as unverified, and so does one whose version could not be read.
+- **An entry the client reports as locked is never planned as an action**, and a
+  plugin skill is never cut individually. The only lever is the whole plugin,
+  and that is proposed, never applied.
 - **Measure usage before deleting any log**, and never apply a retention window
   the user did not choose.
 - **Label every number** measured or estimated, and say that estimates are a
