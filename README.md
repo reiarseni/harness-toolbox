@@ -9,7 +9,7 @@ Practical tools for working with AI coding agents. Built for
 | Skill | What it does |
 |---|---|
 | [`documake`](skills/documake/SKILL.md) | Explores a whole repository with parallel subagents and writes `docs/` for a developer who has to **modify** the system, not for the one who built it. |
-| [`context-optimizer`](skills/context-optimizer/SKILL.md) | Measures what every skill, agent, MCP server, CLAUDE.md and hook costs at startup, finds what overlaps or is never invoked, and applies the cuts you approve with a backup and a reversal manifest. |
+| [`context-optimizer`](skills/experimental/context-optimizer/SKILL.md) *(experimental)* | Measures what every skill, agent, MCP server, CLAUDE.md and hook costs at startup, finds what overlaps or is never invoked, and applies the cuts you approve with a backup and a reversal manifest. |
 
 ## documake
 
@@ -75,7 +75,13 @@ Claude only runs it when you type `/documake`. The only checkpoint with you is t
 Publishing details (GitHub Pages, GitLab Pages, wikis, CI templates) are in
 [`references/deploy.md`](skills/documake/references/deploy.md).
 
-## context-optimizer
+## context-optimizer *(experimental)*
+
+This skill lives in `skills/experimental/`, which holds skills that are not
+approved yet: they run and their self-tests pass, but they have not been used
+enough on real machines to be trusted by default. Read the findings before
+running one, and expect its interface to move.
+
 
 Every session starts with skills, agents, MCP servers, instruction files and
 hooks already loaded. Most audits count bytes in one skills directory and stop
@@ -116,7 +122,7 @@ How it stays safe:
 ```bash
 git clone https://github.com/reiarseni/harness-toolbox.git
 mkdir -p ~/.claude/skills
-cp -r harness-toolbox/skills/context-optimizer ~/.claude/skills/
+cp -r harness-toolbox/skills/experimental/context-optimizer ~/.claude/skills/
 ```
 
 ### Usage
@@ -142,11 +148,12 @@ skills/documake/
 ├── references/      loaded on demand (templates, checks, languages, deploy)
 └── scripts/         deterministic helpers: scan, schema, check, publish
 
-skills/context-optimizer/
-├── SKILL.md         procedure and guardrails
-├── references/      loaded on demand (measurement, portfolio, mechanisms, safety)
-├── scripts/         inventory, measured, portfolio, remediate — each with --self-test
-└── tests/           pressure scenarios for the guardrails
+skills/experimental/           skills that are not approved yet
+└── context-optimizer/
+    ├── SKILL.md      procedure and guardrails
+    ├── references/   loaded on demand (measurement, portfolio, mechanisms, safety)
+    ├── scripts/      inventory, measured, portfolio, remediate — each with --self-test
+    └── tests/        pressure scenarios for the guardrails
 ```
 
 ## License
