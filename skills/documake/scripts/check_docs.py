@@ -31,6 +31,11 @@ LANG_PACKS = {
         ],
         "modules_dir": "08-modulos/",
         "flows_dir": "07-flujos/",
+        "tutorial_doc": "00-primer-cambio.md",
+        "howto_section": "Cómo modificarlo",
+        "flow_change_section": "Para cambiar este flujo",
+        "crossref_re": r"\((?:ver|véase|vease|consultar)\s+[^)]{2,40}\)",
+        "group_labels": ["Flujos", "Módulos", "Modulos", "Recetas"],
         "stack_doc": "01-stack-y-repositorio.md",
         "stack_sections": ["Stack", "Tipo de repositorio", "Organización del repositorio",
                            "Relación con otros repositorios"],
@@ -53,6 +58,8 @@ LANG_PACKS = {
             r"\bobviamente\b", r"\bsimplemente\b", r"\btrivial(mente)?\b", r"\bnuestr[oa]s?\b",
             r"\bnosotros\b", r"\bhicimos\b", r"\bmigramos\b", r"\bmás adelante\b", r"\ben el futuro\b",
             r"\belegante\b", r"\brobust[oa]\b", r"\bescalable\b", r"\blimpi[oa] y\b",
+            r"\bverificad[oa] (con|por) grep\b", r"\bprueba del recién llegado\b",
+            r"\bsubagente\b", r"\bauditoría de (la )?generación\b",
         ],
     },
     "en": {
@@ -63,6 +70,11 @@ LANG_PACKS = {
         ],
         "modules_dir": "08-modules/",
         "flows_dir": "07-flows/",
+        "tutorial_doc": "00-first-change.md",
+        "howto_section": "How to modify it",
+        "flow_change_section": "To change this flow",
+        "crossref_re": r"\((?:see|cf\.?)\s+[^)]{2,40}\)",
+        "group_labels": ["Flows", "Modules", "Recipes"],
         "stack_doc": "01-stack-and-repository.md",
         "stack_sections": ["Stack", "Repository type", "Repository organization",
                            "Relationship with other repositories"],
@@ -85,6 +97,8 @@ LANG_PACKS = {
             r"\bour\b", r"\bwe\b", r"\bI (decided|chose|built)\b", r"\bas everyone knows\b",
             r"\btrivial(ly)?\b", r"\bin the future\b", r"\beventually\b", r"\belegant\b",
             r"\brobust\b", r"\bscalable\b", r"\bclean and\b",
+            r"\bverified (with|by) grep\b", r"\bnewcomer test\b", r"\bsubagent\b",
+            r"\bgeneration audit\b",
         ],
     },
 }
@@ -346,7 +360,9 @@ def cwd_findings(doc, text, add, section_lines=None):
 
 
 def extra_checks(root, docs_dir, pack, meta, md_files, add, marker_re):
-    """Cross-checks: coverage markers, README quickstart, working directories, operations doc, configuration."""
+    """Cross-checks: coverage markers, quickstart, working directories, readability, operations, configuration."""
+    modules_dir_f = pack["modules_dir"].rstrip("/") + "/"
+    flows_dir_f = pack["flows_dir"].rstrip("/") + "/"
     def load(doc):
         with open(os.path.join(docs_dir, doc), encoding="utf-8", errors="ignore") as fh:
             return fh.read()
@@ -426,6 +442,58 @@ def extra_checks(root, docs_dir, pack, meta, md_files, add, marker_re):
         cfg = [f for f in files if CONFIG_FILE_RE.search(f)]
         if cfg and find_section(body_sections(load(ed)), cs) is None:
             add("WARN", ed, 0, f"Config files exist ({', '.join(cfg[:3])}) but «## {cs}» is missing: document how each is loaded and which values matter")
+
+    # F) readability and single-source-of-truth for how-to
+    rc_doc = pack.get("recipes_doc")
+    crossref_re = re.compile(pack["crossref_re"], re.I) if pack.get("crossref_re") else None
+    group_labels = {norm(g) for g in (pack.get("group_labels") or [])}
+    link_re = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)\)")
+    for doc in md_files:
+        if doc.startswith("_meta/"):
+            continue
+        text = load(doc)
+        prose = split_md(text)[0]
+        for n, line in prose:
+            # F1) cross-reference written as prose instead of a link.
+            #     A backticked target is a file outside the docs folder, which is cited as a path
+            #     on purpose (a link leaving the folder breaks on wiki/site targets): leave it alone.
+            if crossref_re:
+                for m in crossref_re.finditer(line):
+                    if "](" in line[max(0, m.start() - 2):m.end() + 2] or "`" in m.group(0):
+                        continue
+                    add("WARN", doc, n, f"Cross-reference {m.group(0)[:40]} is prose, not a link: "
+                        "on a wiki the reader cannot follow it. Link the page")
+            # F2) link text that does not describe its destination
+            for m in link_re.finditer(line):
+                label, target = norm(m.group(1)), m.group(2)
+                if label in group_labels and re.search(r"/[^/)]+\.md$", target):
+                    add("WARN", doc, n, f"Link «{m.group(1)}» points at one page ({target}) but reads like the whole group: "
+                        "use the page's own name as the link text")
+            # F3) sentences too long to scan
+            if not line.lstrip().startswith(("|", ">", "#", "-", "*")) and not re.match(r"\s*\d+[.)]\s", line):
+                for sentence in re.split(r"(?<=[.])\s+", line):
+                    words = len(sentence.split())
+                    if words > 45:
+                        add("WARN", doc, n, f"Sentence of {words} words: split it, or turn the sequence into a numbered list")
+        # F4) tables too wide for a wiki page
+        for n, line in prose:
+            if re.match(r"^\s*\|[\s:|-]+\|\s*$", line):
+                cols = len([c for c in line.strip().strip("|").split("|") if c.strip()])
+                if cols > 6:
+                    add("WARN", doc, n, f"Table with {cols} columns: it overflows a wiki page. Split it, or fold "
+                        "the path into the symbol cell")
+        # F5) how-to steps written into a card or a flow instead of living in the recipes.
+        #     Only the "how to modify"/"to change this flow" section counts: a flow's own
+        #     "step by step" is the explanation of what happens, not a procedure to follow.
+        if rc_doc:
+            raw = (pack.get("howto_section") if doc.startswith(modules_dir_f)
+                   else pack.get("flow_change_section") if doc.startswith(flows_dir_f) else None)
+            if raw:
+                body = find_section(body_sections(text), raw) or []
+                steps = [l for l in body if re.match(r"\s*\d+[.)]\s+\S", l)]
+                if len(steps) >= 3 and rc_doc.rsplit("/", 1)[-1] not in "\n".join(body):
+                    add("WARN", doc, 0, f"«{raw}» carries {len(steps)} numbered steps and no link to {rc_doc}: "
+                        "the procedure belongs in the recipes, once. Say where to start here and link it")
 
     # E) operations doc (Docker, data outside git, backups, observability) — required when there is evidence
     od, osec = pack.get("ops_doc"), pack.get("ops_sections")
@@ -624,6 +692,10 @@ def check(root, docs_dir, lang_arg, use_mermaid):
     for req in pack["required"]:
         if req not in md_files:
             add("ERROR", req, 0, "Required document missing")
+    td = pack.get("tutorial_doc")
+    if td and td not in md_files and meta.get("tutorial") is not False:
+        add("ERROR", td, 0, "No first-change tutorial: reference and explanation without a way in. Write it and run "
+            'its steps, or set "tutorial": false in _meta/documake.json with the reason in coverage')
     if not any(f.startswith(modules_dir) for f in md_files):
         add("ERROR", modules_dir, 0, "No module cards")
     if not any(f.startswith(flows_dir) for f in md_files):
@@ -645,7 +717,7 @@ def check(root, docs_dir, lang_arg, use_mermaid):
             no_code = INLINE_RE.sub("", line)
             for m in LINE_REF_RE.finditer(line):
                 add("ERROR", doc, n, f"Line-number reference «{m.group(0)}»: use path + symbol")
-            if builder_re and not is_meta:
+            if builder_re and not is_meta and not line.lstrip().startswith("#"):
                 for m in builder_re.finditer(no_code):
                     add("WARN", doc, n, f"Builder perspective «{m.group(0)}» → {line.strip()[:90]}")
             for m in marker_re.finditer(line):

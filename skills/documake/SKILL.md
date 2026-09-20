@@ -1,11 +1,11 @@
 ---
 name: documake
-description: Explores a whole repository with parallel subagents and writes docs/ for a developer who needs to MODIFY the system, not for the one who built it — opens with stack, repository kind (monorepo or not), organization and links to other repos, then an abbreviated tree, code map, architecture, core database tables with their relations, end-to-end flows, one card per module, change recipes and glossary. Every claim is checked against the code, a script verifies paths and symbols exist, and a zero-context reader tests the result. Output language is selectable (Spanish by default). Use when the user types /documake, asks to "document this repo", "genera la documentación del proyecto", "que alguien nuevo entienda el código", wants architecture/onboarding docs, or wants those docs updated after code changes.
+description: Explores a whole repository with parallel subagents and writes docs/ for a developer who needs to MODIFY the system, not for the one who built it — opens with a first-change tutorial whose steps are executed, then stack, repository kind (monorepo or not), organization and links to other repos, an abbreviated tree, code map, architecture, core database tables with their relations, end-to-end flows, one card per module, change recipes (the single home for procedures) and glossary. Every claim is checked against the code, a script verifies paths and symbols exist, and a zero-context reader tests the result. Output language is selectable (Spanish by default). Use when the user types /documake, asks to "document this repo", "genera la documentación del proyecto", "que alguien nuevo entienda el código", wants architecture/onboarding docs, or wants those docs updated after code changes.
 license: MIT
 compatibility: Requires Python 3.12+ (stdlib only) and git. Designed for Claude Code; also works in OpenCode.
 metadata:
   author: reiarseni
-  version: "1.0.0"
+  version: "1.1.0"
 disable-model-invocation: true
 argument-hint: "[repo path] [--lang es|en|<code>] [--publish zensical|vitepress|docsify|gitlab-wiki|github-wiki] [--update] [--only <module>]"
 allowed-tools: Read Glob Grep Bash Agent Write Edit AskUserQuestion
@@ -227,6 +227,7 @@ for `es`; `en` and others in `languages.md`; skeletons in
 ```
 <docs>/                       ← the folder chosen in Step 0 (docs/, doc/sistema/…)
 ├── README.md                 ← START HERE: what it is, reading paths by goal
+├── 00-primer-cambio.md       ← FORCED: tutorial, clean clone → a real change of your own, steps EXECUTED
 ├── 01-stack-y-repositorio.md ← FORCED: stack+versions, repo kind (mono/multi/single), how it is organized,
 │                                       relationship with OTHER GitLab repos
 ├── 02-estructura.md          ← FORCED: abbreviated tree (≤ 70 lines), every path real
@@ -247,7 +248,7 @@ for `es`; `en` and others in `languages.md`; skeletons in
     └── cobertura.md          ← covered / not covered / markers / reader test
 ```
 
-**Forced sections.** `01`, `02` and (when tables exist) `06` are mandatory and
+**Forced sections.** `00`, `01`, `02` and (when tables exist) `06` are mandatory and
 enforced by the checker: required headings, non-empty sections, every tree
 path real, every ER entity a real table, every ER relation backed by a real FK
 (or labeled *logical*), every detected link to another repo mentioned. The only
@@ -277,9 +278,16 @@ text and doc; the checker verifies both.
 vocabulary (area and table names) for everything else.
 1. `01-stack-y-repositorio` (from `repo.txt`), 2. `02-estructura` (from its tree),
 3. `06-datos` (from `schema.txt` + the data explorer), then
-4. `08-modulos` → `07-flujos` → `04-mapa` → `05-arquitectura` → `09-recetas` →
-   `10-entorno` → `11-integraciones` → `13-operacion-y-datos` → `12-trampas` → `glosario`, and last
-5. `03-vision-general` and `README` (they summarize the rest).
+4. `08-modulos` → `09-recetas` → `07-flujos` → `04-mapa` → `05-arquitectura` →
+   `10-entorno` → `11-integraciones` → `13-operacion-y-datos` → `12-trampas` → `glosario`, then
+5. `03-vision-general` and `README` (they summarize the rest), and last
+6. `00-primer-cambio`, **running every step** as you write it (Step 6 covers it).
+
+Recipes come right after the cards **and before the flows** because both link
+them: the cards name the change, the recipes own the steps (R2.9). While writing
+a card, list its typical changes as recipe names; write those recipes next, then
+turn the card's list into links. If a card or a flow ends up with numbered steps
+of its own, the procedure was written twice — move it and link it.
 
 How to write the three forced docs (details and skeletons in `templates.md`):
 - **01 — Repository type**: name the kind and give the evidence (workspace
@@ -305,11 +313,27 @@ Writing rules (full list in `constitution.md`):
 - **Name, don't link to lines.** Paths and symbols in backticks
   (`src/orders/service.py`, `OrderService.cancel`) so they are searchable.
   Never line numbers: they rot on the first commit.
-- **Every module card has "How to modify it"** with typical changes and their
-  touch points, and **"Who uses it"** (blast radius). Without them it's unfinished.
+- **Every module card has "How to modify it"** — the entry points and a **link
+  to the recipe** that holds the steps, never the steps themselves — and
+  **"Who uses it"** (blast radius). Without them it's unfinished.
+- **Procedures live in the recipes, once** (R2.9). Cards and flows say where and
+  what breaks; the recipes say how. The checker warns when a card or a flow
+  carries numbered steps and no link to the recipes.
 - **Link files, never `#anchors`.** Slugs differ between GitLab, Zensical and
   Docsify (accents break them); name the section in the text instead.
   Relative `.md` links work on every target.
+- **Cross-references are links, and the link text is the destination's name.**
+  Never "(see the pitfalls doc)" in prose: on a wiki that's a dead end. Never
+  `[Flows](07-flows/one-flow.md)` either — it reads like the group and lands on
+  one page. Both are checked.
+- **Scannable.** A sequence is a numbered list, not a chain of arrows in a
+  paragraph. Keep sentences under ~45 words and tables under ~6 columns (fold
+  the path into the symbol cell); wider tables scroll sideways on a wiki and go
+  unread. Both are checked.
+- **Keep the making-of out.** No audit notes, no "verified with grep", no
+  newcomer-test score, no mention of subagents — that lives in `_meta/`. Open
+  markers are gathered in the coverage file; leaving them mid-paragraph makes
+  the page read as unfinished.
 - **Mermaid only when the information is a relationship.** ≤ 12 nodes; node
   labels use glossary terms, not class names.
 - **Present tense, impersonal.** No "we decided", "initially", "our idea".
@@ -370,7 +394,15 @@ The script checks the docs are **true**; this checks they are **useful**.
    map, a module card or the recipes). Wrong answers first — the docs say
    something false.
 5. Threshold **≥ 8/10**. If not reached, fix and repeat once with new
-   questions. Record in the coverage file. Questions go in the docs' language.
+   questions. Record the score in `_meta/documake.json` (`newcomer_test`), which
+   is not published — **never in a page a reader opens**, and not in the coverage
+   file either, whose job is the open gaps. Questions go in the docs' language.
+6. **Run the tutorial.** Write `00-primer-cambio` now and execute every step as
+   you write it, in the repo as it stands. A step that fails gets fixed or
+   dropped; the "Check it works" output is the one you actually saw, pasted. If
+   the repo cannot be run here (no credentials, needs a GPU or external
+   service), set `"tutorial": false` in `documake.json` and put the reason in
+   coverage — never ship steps you did not run.
 
 ## Step 7 — `--update` mode
 
@@ -388,9 +420,10 @@ The script checks the docs are **true**; this checks they are **useful**.
 
 ## Step 8 — Close
 
-1. Write `documake.json`: `{"language": "es", "database": true, "commit": "<sha>",
-   "date": "<ISO>", "areas": {"<area>": ["paths"]}, "flows": [...],
-   "newcomer_test": "9/10", "skill_version": 3}`.
+1. Write `documake.json`: `{"language": "es", "database": true, "tutorial": true,
+   "commit": "<sha>", "date": "<ISO>", "areas": {"<area>": ["paths"]}, "flows": [...],
+   "newcomer_test": "9/10", "skill_version": 4}`. `"tutorial": false` only with the
+   reason in coverage (Step 6.6).
 2. Report to the user **in the user's language**, briefly: what was generated
    (README path), check and newcomer-test results, the top 3 ASK markers (only
    a person can answer them), weak areas.
@@ -430,6 +463,10 @@ wiki sync and gotchas; it is not loaded before this step.
 - Read the whole codebase in your own window.
 - Overwrite docs documake didn't generate.
 - Finish a module card without "How to modify it" and "Who uses it".
+- Write the same procedure in a card, a flow and the recipes: it lives in the recipes.
+- Ship a tutorial whose steps you did not run.
+- Leave a cross-reference as prose, or label a link with the name of its folder.
+- Put audit notes, scores or subagent talk in the docs instead of `_meta/`.
 - Close without a CLEAN check and the newcomer test.
 - Tell the project's history as history.
 - Mix languages in one docs folder, or translate code identifiers.

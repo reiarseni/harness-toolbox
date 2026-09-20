@@ -29,6 +29,7 @@ clone, mark it `[UNVERIFIED]`; never invent a step.
 ## Start here, by goal
 | I came to… | Read, in order |
 |---|---|
+| Make my first change here | First change (tutorial) |
 | Know what this repo is made of and where it sits | Stack and repository → Structure |
 | Understand the system from scratch | Overview → Code map → Architecture |
 | Understand the data | Data |
@@ -40,6 +41,60 @@ clone, mark it `[UNVERIFIED]`; never invent a step.
 ## Index        <every doc, one line each, linked; include the operations doc when it exists>
 ## Not covered here   <and where to look instead>
 ```
+
+**Link text is the destination's own name.** `[Flows](07-flows/checkout.md)`
+lies: it reads like the whole group and lands on one page. Either link each page
+by its name, or make the group a bold label and list its pages under it. The
+checker flags the lie.
+
+**Mind the `../`.** Cards and flows live in a subfolder, so a link from one of
+them to a top-level doc is `../09-change-recipes.md`. The checker reports the
+missing `../` as a broken link.
+
+## `00-first-change.md` — the way in (tutorial)
+
+The only doc written in the second person, and the only one whose steps you
+**run** before writing them down. Goal: someone who has never seen the repo
+changes something real and sees the change. Not a tour of the architecture —
+one small, genuinely useful change, end to end.
+
+Pick the change from the recipes: the shortest one that crosses at least one
+boundary (an API response field the UI shows, a validation rule with a test).
+Avoid anything needing credentials, external services or a GPU.
+
+```markdown
+# Your first change
+
+<One sentence: what you will have changed and seen by the end, and the rough
+time. "In about 20 minutes you will add a field to the employee response and
+see it in the panel.">
+
+## Before you start
+<What must already work: the quickstart, done. Link it. One command that proves
+it, with its expected output.>
+
+## The change
+1. <One action per step: file to open, what to write, why that file.>
+   `path` · `Symbol`
+2. …
+<Each step is checkable. If a step can fail in a common way, say how it looks
+and what to do — right there, not in a pitfalls section.>
+
+## Check it works
+<The command and the expected output, and where in the UI/API it shows. The
+reader must be able to tell success from failure without asking anyone.>
+
+## Undo it
+<How to leave the repo as it was: `git checkout -- <paths>`, drop the migration…>
+
+## What to read next
+<2-3 links, by what they came for. Send them to the code map and the recipes.>
+```
+
+**Executed, not drafted.** Run every step in a clean clone before writing it.
+A step you could not run is either dropped or marked `[UNVERIFIED]` with what
+blocked it — and if most of it is unverified, say so in the coverage file and
+set `"tutorial": false` rather than ship a tutorial that fails.
 
 ## `01-stack-and-repository.md` — context first (forced; arc42 §3 + §5 level 0)
 
@@ -210,7 +265,7 @@ in code not in the DB, relations without FK (logical), migrations rules.>
 ## When something fails
 | Failure | Detected at | Caller sees | Left half-done |
 ## Side effects
-## To change this flow   <where to hook: add a step, change a validation, add an effect>
+## To change this flow   <WHERE to hook, and which recipe has the steps — link it, never repeat it>
 ```
 
 ## `08-modules/<area>.md` — module card
@@ -226,7 +281,7 @@ How to test it.
 ## Responsibility
 <What it does and does NOT do (what looks like it's here but lives elsewhere).>
 ## Key pieces
-| Symbol | Path | For |
+| Symbol (`path`) | For |      <two columns: the path rides with the symbol, so the table fits a wiki page>
 ## How it works           <short prose or diagram: the internal walk, not an inventory>
 ## Who uses it            <blast radius of any change here>
 | Used by | Uses what | Breaks if… |
@@ -234,16 +289,32 @@ How to test it.
 ## Tables it owns         <table names from `06`; which it writes vs only reads>
 ## State and configuration
 ## Invariants
-## How to modify it
-### <Typical change 1, e.g. "Add a new discount type">
-1. `path` — <what to touch>
-2. `path` — <what else>
-3. Test: `<command>`
+## How to modify it       <entry points + the recipes that have the steps. NOT the steps>
+| I want to… | Start at | Recipe |
+|---|---|---|
+| <Add a new discount type> | `path` · `Symbol` | [<recipe name>](../09-change-recipes.md) |
+<Something specific to this module and in no recipe — one or two lines of prose,
+or add it to the recipes and link it. Numbered procedures here are the bug:
+they drift from the recipe that says the same thing.>
 ## Pitfalls               <surprise + checkable fact + where>
 ## How to test it         <where tests live, command for just these, what's uncovered>
 ```
 
 ## `09-change-recipes.md`
+
+**The only place procedures live.** Cards and flows link here; they never carry
+their own numbered steps. One recipe per recurrent change, including the ones
+that stay inside a single module — if a card would have listed steps, they
+belong here under a recipe the card links.
+
+Pulling them together is what exposes the drift: two half-recipes for one change
+(the server half in one card, the client half in another) merge into one, and a
+recipe that restates another under a different name disappears. Expect that, and
+merge rather than paste.
+
+Past ~10 recipes, group them with `##` per area and `###` per recipe, and open
+with a plain-text index — **not links**: anchors break across wiki and site
+targets. Cards name the recipe in quotes and link the file.
 
 ```markdown
 # Change recipes

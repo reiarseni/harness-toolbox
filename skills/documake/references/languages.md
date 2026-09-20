@@ -14,6 +14,7 @@ vars, tables), the `_meta/` folder and `_meta/documake.json` (its keys stay Engl
 | # | Role | `es` (default) | `en` |
 |---|---|---|---|
 | — | Front door | `README.md` | `README.md` |
+| 00 | First-change tutorial (steps executed, not drafted) | `00-primer-cambio.md` | `00-first-change.md` |
 | 01 | Stack + repository (kind, organization, other repos) | `01-stack-y-repositorio.md` | `01-stack-and-repository.md` |
 | 02 | Abbreviated structure (tree) | `02-estructura.md` | `02-structure.md` |
 | 03 | Overview | `03-vision-general.md` | `03-overview.md` |
@@ -63,6 +64,15 @@ Other headings are translated naturally (`es`: Piezas principales, Cómo
 funciona, De qué depende, Estado y configuración, Trampas, Grupos de tablas;
 flows: Paso a paso, Cuando algo falla, Efectos secundarios, Para cambiar este
 flujo; code map: "Quiero cambiar… → empieza por…").
+
+**Tutorial** (`00-…`, required unless `"tutorial": false` in `documake.json`)
+
+| `es` | `en` |
+|---|---|
+| `## Antes de empezar` | `## Before you start` |
+| `## El cambio` | `## The change` |
+| `## Comprobar que funciona` | `## Check it works` |
+| `## Qué leer ahora` | `## What to read next` |
 
 **Operations** (`13-…`, required when the repo shows evidence)
 

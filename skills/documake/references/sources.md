@@ -12,7 +12,7 @@ dropped, judged against the constitution. Not needed at run time.
 | codebase-analysis-skill (Ycsyyds) | Mandatory `[VERIFY: file:line]`, automated checks, planned coverage | Coverage plan before exploring; evidence per claim | 1,500–3,000-line docs contradict "understand where everything is" |
 | doc-it (Dosu) | Audit existing docs, never invent flags/fields, match repo style | Don't overwrite existing docs; no invention | API-reference focus |
 | Code Tour (github/awesome-copilot) | Persona tours, path validator, SMIG (situation, mechanism, implication, gotcha) | Strict path validation; gotcha in every explanation | `.tour` format tied to VS Code |
-| Diátaxis skills | Tutorial / how-to / reference / explanation, no mode mixing | Recipes = how-to; map & cards = reference; architecture = explanation | Learning tutorials: out of scope |
+| Diátaxis skills | Tutorial / how-to / reference / explanation, no mode mixing | Recipes = the only how-to (cards and flows link them); map & cards = reference; architecture = explanation; `00` = the one tutorial | A full learning course: still out of scope — `00` teaches the repo, not the domain |
 | grill-with-docs (most installed in category) | Resolve terms into a glossary | Glossary with "don't confuse with" | Interviewing: documake reads facts from code, asks only what code can't say |
 
 ## Sources for the context, structure and data sections

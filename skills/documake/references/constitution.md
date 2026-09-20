@@ -45,6 +45,19 @@ a change to make and none of the author's context.
   tables, hub tables named once); list the rest in a table. Every entity and
   relation is checked against the code: a made-up table is worse than a
   missing one.
+- **R1.12 One way in.** Reference and explanation orient someone who is already
+  moving; they don't start anyone. The first-change tutorial takes a reader from
+  a clean clone to a change of their own, running. Its steps are **executed**,
+  not drafted: a tutorial that fails on step 4 costs more trust than no tutorial.
+  *Test:* a newcomer follows it without asking anyone anything.
+- **R1.13 A cross-reference is a link.** "(see the pitfalls doc)" works in a
+  folder, where the reader can look around; on a wiki it's a dead end. Name the
+  page and link it, and make the **link text the page's own name** — a link
+  reading "Flows" that lands on one flow lies about where it goes.
+- **R1.14 Scannable beats complete-in-one-breath.** A sequence is a numbered
+  list, never a chain of arrows inside a paragraph. Sentences stay under ~45
+  words and tables under ~6 columns: past that a wiki page scrolls sideways and
+  nobody reads it. Same facts, reachable.
 
 ## From P2 — "the modifier's perspective"
 
@@ -66,8 +79,22 @@ a change to make and none of the author's context.
 - **R2.6 Recipes list every touch point**, in order, with the test to run. A
   recipe missing a step is worse than none.
 - **R2.7 Impersonal, no author jargon.** No we/I/our; no undefined internal
-  abbreviations. The reader wasn't in the meetings.
+  abbreviations. The reader wasn't in the meetings. This includes the jargon
+  these docs invent: if "card" means a module page, the glossary says so.
 - **R2.8 Explicit blast radius.** Every module card says who depends on it.
+- **R2.9 One how-to layer.** Procedures live in the recipes, **once**. A module
+  card and a flow say *where* to change and *what breaks*, then link the recipe
+  that says *how*. Written three times, the three copies drift and the reader
+  can't tell which is current. *Test:* grep a procedure's first step; it appears
+  in one file.
+- **R2.10 The docs are not the record of making them.** No audit notes, no
+  "verified with grep", no coverage score, no mention of subagents. An invariant
+  states the rule ("services never enqueue work"), not the grep that proved it;
+  the proof goes in the commit or in `_meta/`. Scores about the docs themselves
+  live in `documake.json`, which is not published.
+  This does **not** apply to TODO/ASK markers: they stay where the reader meets
+  the gap (R1.8), and the coverage file indexes them. A marker in the card is
+  the reader's warning; the index is for whoever resolves it.
 
 ## Builder-perspective phrases
 
@@ -82,6 +109,20 @@ each needs review.
 | nuestro, nosotros / our, we, I | Impersonal |
 | más adelante, en el futuro / eventually, in the future | Pitfalls doc, as a current risk |
 | elegante, robusto, escalable / elegant, robust, scalable | The checkable fact, or nothing |
+
+## Resolved tension: four modes on one page
+
+Diátaxis splits documentation into tutorial (learning), how-to (a task),
+reference (lookup) and explanation (understanding), and warns that mixing modes
+on one page is the common failure. A module card is deliberately **two** of
+them — reference (pieces, tables, tests) and explanation (how it works,
+invariants) — because a modifier arrives asking both at once and splitting them
+would double the navigation.
+
+What the card must **not** carry is the third mode: the procedure. That is
+R2.9. The card links it. And the mode that is usually missing altogether is the
+tutorial (R1.12) — reference-heavy docs feel thorough while leaving a newcomer
+with nowhere to start.
 
 ## Resolved tension: line citations vs names
 

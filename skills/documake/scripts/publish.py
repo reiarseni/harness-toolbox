@@ -7,8 +7,8 @@ Targets (site generators write config; every target writes a deploy kit to <repo
   zensical     <repo>/mkdocs-documake.yml (mkdocs.yml format). Build: zensical build -f mkdocs-documake.yml → site/
   vitepress    <docs>/.vitepress/config.mts (sidebar, local search, Mermaid).   Build: npx vitepress build <docs> → site/
   docsify      <docs>/index.html + _sidebar.md + .nojekyll. No build: serve the docs folder.
-  gitlab-wiki  HYBRID sync into <project>.wiki.git: only a reserved section (default documentacion-del-proyecto/)
-               is written; every page there carries a "generated, do not edit" banner; stale generated pages
+  gitlab-wiki  HYBRID sync into <project>.wiki.git: only a reserved section (default Documentacion/)
+               is written; every page there carries a "generated, do not edit" footer; stale generated pages
                are removed; nothing outside the section is touched except a marked block in _sidebar.md.
                --out syncs a local clone; --dry-run shows the plan; --force overrides hand-edited pages.
   github-wiki  pages for <repo>.wiki.git, FLAT namespace (README→Home.md, a/b.md→a-b.md, _Sidebar.md). --out syncs.
@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 
 DIR_LABELS = {"07-flujos": "Flujos", "08-modulos": "Módulos", "07-flows": "Flows",
               "08-modules": "Modules", "_meta": "Meta"}
@@ -130,49 +131,163 @@ def sync_wiki(docs, out, rename, flat, sidebar_name, link):
     print(f"Synced {len(files)} pages + {sidebar_name} into {out}")
 
 
-SECTION_DEFAULT = {"es": "documentacion-del-proyecto", "en": "project-documentation"}
+SECTION_DEFAULT = {"es": "Documentacion", "en": "Documentation"}
+LEGACY_SECTIONS = ["documentacion-del-proyecto", "project-documentation"]
 SIDEBAR_TITLE = {"es": "Documentación del proyecto", "en": "Project documentation"}
-BANNER = {
-    "es": "> ⚠️ **Página generada automáticamente** desde {src}. **No la edites aquí**: el próximo sync la "
-          "sobrescribe. Cambia el fichero en el repositorio mediante un MR.",
-    "en": "> ⚠️ **Auto-generated page** from {src}. **Do not edit here**: the next sync overwrites it. "
-          "Change the file in the repository through a merge request.",
+NOTICE = {
+    "es": "Generado desde {src} · no se edita aquí: el próximo sync lo sobrescribe, cambia el fichero mediante un MR.",
+    "en": "Generated from {src} · do not edit here: the next sync overwrites it, change the file through a merge request.",
 }
+NAV_WORDS = {"es": ("Inicio", "Índice"), "en": ("Home", "Index")}
 GEN = "<!-- documake:generated"
 SB_START, SB_END = "<!-- documake:sidebar:start -->", "<!-- documake:sidebar:end -->"
 
 
 def is_generated(path):
+    """The marker is the first line, or the first line after the front matter."""
     try:
         with open(path, encoding="utf-8") as fh:
-            return fh.readline().startswith(GEN)
+            head = [fh.readline() for _ in range(6)]
     except (OSError, UnicodeDecodeError):
         return False
+    return any(line.startswith(GEN) for line in head)
 
 
-def gitlab_section(docs, docs_rel, out, section, source_url, sidebar_mode, dry, force):
+# ---------- wiki pages (gitlab-wiki) ----------
+
+def wiki_slug(rel):
+    """08-modulos/admin-web.md -> Modulos/Admin-web (ASCII, no numeric prefix, capitalised, no .md)."""
+    if rel == "README.md":
+        return "Home"
+    parts = []
+    for seg in rel[:-3].split("/"):
+        seg = re.sub(r"^\d+-", "", seg.lstrip("_"))
+        seg = unicodedata.normalize("NFKD", seg).encode("ascii", "ignore").decode()
+        parts.append(seg[:1].upper() + seg[1:])
+    return "/".join(parts)
+
+
+def rewrite_wiki_links(text, src_rel, mapping):
+    """Point relative .md links at wiki pages: absolute path, no extension, anchor kept."""
+    src_dir = os.path.dirname(src_rel)
+
+    def fix(m):
+        target = m.group(2)
+        if re.match(r"^[a-z]+:", target) or target.startswith("#"):
+            return m.group(0)
+        path, _, anchor = target.partition("#")
+        resolved = os.path.normpath(os.path.join(src_dir, path))
+        if resolved not in mapping:
+            return m.group(0)
+        return m.group(1) + "/" + mapping[resolved][:-3] + ("#" + anchor if anchor else "") + m.group(3)
+
+    return LINK_RE.sub(fix, text)
+
+
+def load_nav(path):
+    try:
+        return json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def cap(s):
+    return s[:1].upper() + s[1:]
+
+
+def nav_entries(docs, nav):
+    """collect() with wiki labels: 'Inicio' for the README, group prefix ('Flujo:') dropped, overrides applied."""
+    labels, groups = nav.get("labels", {}), nav.get("groups", {})
+    home = NAV_WORDS.get(LANG, NAV_WORDS["en"])[0]
+    out = []
+    for label, target in collect(docs):
+        if isinstance(target, list):
+            group = groups.get(target[0][1].split("/")[0], label)
+            singular = group[:-1] if group.endswith("s") else group
+            strip = re.compile(r"^\s*" + re.escape(singular) + r"\s*:\s*", re.I)
+            out.append((group, [(labels.get(p) or cap(strip.sub("", t)), p) for t, p in target]))
+        elif target == "README.md":
+            out.append((labels.get(target) or home, target))
+        else:
+            out.append((labels.get(target) or cap(label), target))
+    return out
+
+
+def wiki_sidebar(entries, link, title, details=True):
+    if not details:
+        return sidebar_md(entries, link, title)
+    lines = [f"### {title}", ""]
+    for label, target in entries:
+        if isinstance(target, list):
+            lines += ["", "<details>", f"<summary><b>{label}</b></summary>", ""]
+            lines += [f"- [{l}]({link(t)})" for l, t in target]
+            lines += ["", "</details>", ""]
+        else:
+            lines.append(f"- [{label}]({link(target)})")
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).rstrip("\n") + "\n"
+
+
+def wiki_pages(docs, docs_rel, section, source_url, nav):
+    """Build every wiki page. Returns ({wiki path.md: content}, {source rel: wiki path.md})."""
+    files = all_md(docs)
+    mapping = {f: section + "/" + wiki_slug(f) + ".md" for f in files}
+    dup = sorted({n for n in mapping.values() if list(mapping.values()).count(n) > 1})
+    if dup:
+        sys.exit(f"Renaming produces duplicate page names: {dup}")
+    order = []
+    for label, target in nav_entries(docs, nav):
+        order += [t for _, t in target] if isinstance(target, list) else [target]
+    order += [f for f in files if f not in order]
+    labels = {}
+    for label, target in nav_entries(docs, nav):
+        for l, t in (target if isinstance(target, list) else [(label, target)]):
+            labels[t] = l
+    index_word = NAV_WORDS.get(LANG, NAV_WORDS["en"])[1]
+    titles = nav.get("titles", {})
+    pages = {}
+    for f in files:
+        text = open(os.path.join(docs, f), encoding="utf-8").read()
+        title = titles.get(f) or title_of(os.path.join(docs, f))
+        lines = text.split("\n")
+        if lines and lines[0].startswith("# "):
+            lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines = lines[1:]
+        body = rewrite_wiki_links("\n".join(lines), f, mapping)
+        long = len(lines) > 40 or sum(1 for l in lines if l.startswith("## ")) >= 3
+        src = f"{docs_rel}/{f}"
+        ref = f"[`{src}`]({source_url.rstrip('/')}/{src})" if source_url else f"`{src}`"
+        i = order.index(f)
+        prev_l = f"← [{labels.get(order[i - 1], order[i - 1])}](/{mapping[order[i - 1]][:-3]})" if i > 0 else ""
+        next_l = (f"[{labels.get(order[i + 1], order[i + 1])}](/{mapping[order[i + 1]][:-3]}) →"
+                  if i + 1 < len(order) else "")
+        index_l = f"[{index_word}](/{mapping['README.md'][:-3]})" if "README.md" in mapping and f != "README.md" else ""
+        pager = " · ".join(x for x in (prev_l, index_l, next_l) if x)
+        head = f"---\ntitle: {q(title)}\n---\n{GEN} source={src} -->\n\n" + ("[[_TOC_]]\n\n" if long else "")
+        foot = "\n\n---\n\n" + (pager + "\n\n" if pager else "") + "<sub>" + NOTICE.get(LANG, NOTICE["en"]).format(src=ref) + "</sub>\n"
+        pages[mapping[f]] = head + body.rstrip("\n") + foot
+    return pages, mapping
+
+
+def gitlab_section(docs, docs_rel, out, section, source_url, sidebar_mode, dry, force,
+                   nav=None, legacy=(), flat_sidebar=False):
     if not os.path.isdir(os.path.join(out, ".git")):
         sys.exit(f"--out {out} is not a git clone of the wiki repo")
     section = section.strip("/")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", section):
-        sys.exit(f"--section must be one lowercase slug (a-z, 0-9, hyphens), got {section!r}")
-    files = all_md(docs)
-    mapping = {f: section + "/" + gitlab_rename(f) for f in files}
-    new = {}
-    for f in files:
-        src = f"{docs_rel}/{f}"
-        ref = f"[`{src}`]({source_url.rstrip('/')}/{src})" if source_url else f"`{src}`"
-        head = f"{GEN} source={src} -->\n{BANNER.get(LANG, BANNER['en']).format(src=ref)}\n\n"
-        new[mapping[f]] = head + rewrite_links(open(os.path.join(docs, f), encoding="utf-8").read(), f, mapping)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", section):
+        sys.exit(f"--section must be one slug (letters, digits, hyphens), got {section!r}")
+    nav = {} if nav is None else nav
+    new, mapping = wiki_pages(docs, docs_rel, section, source_url, nav)
 
-    base = os.path.join(out, section)
+    bases = [os.path.join(out, section)] + [os.path.join(out, l) for l in legacy if l != section]
     existing = {}
-    if os.path.isdir(base):
-        for dp, _, fns in os.walk(base):
-            for fn in fns:
-                if fn.endswith(".md"):
-                    full = os.path.join(dp, fn)
-                    existing[os.path.relpath(full, out)] = full
+    for base in bases:
+        if os.path.isdir(base):
+            for dp, _, fns in os.walk(base):
+                for fn in fns:
+                    if fn.endswith(".md"):
+                        full = os.path.join(dp, fn)
+                        existing[os.path.relpath(full, out)] = full
     add, upd, same, delete, conflicts = [], [], [], [], []
     for rel, content in sorted(new.items()):
         if rel not in existing:
@@ -203,14 +318,16 @@ def gitlab_section(docs, docs_rel, out, section, source_url, sidebar_mode, dry, 
             write(os.path.join(out, rel), new[rel])
         for rel in delete:
             os.remove(existing[rel])
-        for dp, dns, fns in sorted(os.walk(base), reverse=True):
-            if os.path.isdir(dp) and not os.listdir(dp):
-                os.rmdir(dp)
+        for base in bases:
+            for dp, dns, fns in sorted(os.walk(base), reverse=True):
+                if os.path.isdir(dp) and not os.listdir(dp):
+                    os.rmdir(dp)
 
     sb_state = "skipped"
     if sidebar_mode == "merge":
-        block = (SB_START + "\n" + sidebar_md(collect(docs), lambda r: "/" + mapping[r][:-3],
-                                              SIDEBAR_TITLE.get(LANG, SIDEBAR_TITLE["en"])) + SB_END + "\n")
+        block = (SB_START + "\n" + wiki_sidebar(nav_entries(docs, nav), lambda r: "/" + mapping[r][:-3],
+                                                SIDEBAR_TITLE.get(LANG, SIDEBAR_TITLE["en"]), not flat_sidebar)
+                 + SB_END + "\n")
         sb = os.path.join(out, "_sidebar.md")
         cur = open(sb, encoding="utf-8").read() if os.path.isfile(sb) else None
         if cur is None:
@@ -232,12 +349,7 @@ def gitlab_section(docs, docs_rel, out, section, source_url, sidebar_mode, dry, 
             print(f"  {label}: {rel}")
     home = os.path.join(out, "home.md")
     if os.path.isfile(home) and section not in open(home, encoding="utf-8").read():
-        print(f"hint: your wiki home.md doesn't link to the section; add [Documentación del proyecto](/{section}/home)")
-
-
-def gitlab_rename(rel):
-    rel = "home.md" if rel == "README.md" else rel
-    return "meta/" + rel[len("_meta/"):] if rel.startswith("_meta/") else rel
+        print(f"hint: your wiki home.md doesn't link to the section; add [Documentación](/{section}/Home)")
 
 
 def github_rename(rel):
@@ -485,7 +597,7 @@ wiki-sync:
   script:
     - WIKI_URL="$(echo "$CI_PROJECT_URL" | sed "s#://#://oauth2:${{WIKI_TOKEN}}@#").wiki.git"
     - git clone --quiet "$WIKI_URL" /tmp/wiki
-    - python3 .documake/publish.py {docs_rel} --target gitlab-wiki --out /tmp/wiki --repo . --source-url "${{CI_PROJECT_URL}}/-/blob/${{CI_DEFAULT_BRANCH}}"
+    - python3 .documake/publish.py {docs_rel} --target gitlab-wiki --out /tmp/wiki --repo . --section Documentacion --source-url "${{CI_PROJECT_URL}}/-/blob/${{CI_DEFAULT_BRANCH}}"
     - cd /tmp/wiki && git add -A
     - |
       if git diff --cached --quiet; then echo "wiki already up to date"; exit 0; fi
@@ -493,7 +605,7 @@ wiki-sync:
     - 'git push --quiet origin HEAD || (git pull --rebase --quiet origin "$(git rev-parse --abbrev-ref HEAD)" && git push --quiet origin HEAD)'
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      changes: ["{docs_rel}/**/*"]
+      changes: ["{docs_rel}/**/*", ".documake/**/*"]
 """
         return [write(os.path.join(KIT, "gitlab-wiki-sync.gitlab-ci.yml"), body)]
     body = f"""# Sync docs → GitHub wiki after each push to main. Copy to .github/workflows/wiki.yml.
@@ -583,6 +695,7 @@ def main():
     ap.add_argument("--section", help="gitlab-wiki: reserved wiki section slug (default per language, or _meta/documake.json wiki.section)")
     ap.add_argument("--source-url", help="gitlab-wiki: base URL of the repo files, e.g. $CI_PROJECT_URL/-/blob/main (banner links)")
     ap.add_argument("--sidebar", choices=["merge", "skip"], default=None, help="gitlab-wiki: merge a marked block into _sidebar.md (default) or leave it alone")
+    ap.add_argument("--sidebar-flat", action="store_true", help="gitlab-wiki: plain sidebar list instead of collapsible <details> groups")
     ap.add_argument("--dry-run", action="store_true", help="gitlab-wiki: show what would change, write nothing")
     ap.add_argument("--force", action="store_true", help="gitlab-wiki: overwrite/delete hand-edited pages inside the section")
     a = ap.parse_args()
@@ -612,7 +725,9 @@ def main():
                 wcfg = meta.get("wiki") or {}
                 gitlab_section(docs, docs_rel, os.path.abspath(a.out),
                                a.section or wcfg.get("section") or SECTION_DEFAULT.get(LANG, SECTION_DEFAULT["en"]),
-                               a.source_url, a.sidebar or wcfg.get("sidebar", "merge"), a.dry_run, a.force)
+                               a.source_url, a.sidebar or wcfg.get("sidebar", "merge"), a.dry_run, a.force,
+                               nav=load_nav(os.path.join(KIT, "wiki-nav.json")), legacy=LEGACY_SECTIONS,
+                               flat_sidebar=a.sidebar_flat)
             else:
                 sync_wiki(docs, os.path.abspath(a.out), github_rename, True, "_Sidebar.md",
                           lambda r: github_rename(r)[:-3])
