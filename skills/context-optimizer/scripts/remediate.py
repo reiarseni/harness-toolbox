@@ -43,27 +43,91 @@ PLUGIN_CACHE_MARKER = os.path.join("plugins", "cache")
 # 0.93 GB. The user is shown what each window would free and picks one.
 RETENTION_WINDOWS = (7, 14, 30, 90)
 
-# Mechanism -> how it behaves. "verified" means confirmed to work on this
-# machine; anything else must pass a probe before it may be applied in bulk.
+# Mechanism -> how it behaves. `verified_on` records the single client version
+# the mechanism was actually measured against; anything else must pass a probe
+# before it may be applied in bulk.
+#
+# A mechanism is verified against a client version, never in the abstract. What
+# `skillOverrides` reaches was established on 2.1.278 and could change in any
+# release; recording the version is what lets a later run notice that its
+# evidence has expired and ask for a probe again, instead of applying a
+# mechanism on the strength of somebody else's measurement.
 MECHANISMS = {
     "disable-model-invocation": {
         "applies_to": {"user-global", "project"},
         "keeps_manual_invocation": True,
-        "verified": True,
+        "verified_on": "2.1.278",
         "note": "adds a frontmatter key to a file the user owns",
     },
+    # Measured on Claude Code 2.1.278: skillOverrides does NOT reach plugin
+    # skills, by either the bare or the qualified name. The client locks them
+    # ("locked by plugin" in /skills) and routes them through /plugin. "plugin"
+    # is therefore absent from applies_to, which makes every plugin skill
+    # propose-only. See references/mechanisms.md.
     "skill-override-off": {
-        "applies_to": {"claude-ai-synced", "plugin", "built-in"},
+        "applies_to": {"claude-ai-synced", "built-in"},
         "keeps_manual_invocation": False,
-        "verified": False,
+        "verified_on": "2.1.278",
         "note": "sets skillOverrides in settings.json; the entry disappears entirely",
+        # Writes to settings.json, never to the entry's own file — so the
+        # plugin-cache guardrail must not be applied to its target.
+        "writes_to_entry_file": False,
     },
     "unlink-agent": {
         "applies_to": {"user-global", "project"},
         "keeps_manual_invocation": False,
-        "verified": True,
+        "verified_on": "2.1.278",
         "note": "removes the symlink; the file in the source repository is untouched",
     },
+}
+
+
+def detect_client_version() -> str | None:
+    """Ask the client what version it is, without assuming it is installed."""
+    try:
+        proc = subprocess.run(["claude", "--version"], capture_output=True,
+                              text=True, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"\d+\.\d+\.\d+", proc.stdout or "")
+    return match.group(0) if match else None
+
+
+def is_verified(mechanism: str, client_version: str | None) -> bool:
+    """A mechanism counts as verified only on the version it was measured on.
+
+    An unknown version is treated as unverified. That costs one probe and one
+    restart; the alternative cost is a block applied on evidence gathered
+    somewhere else, which is how a saving gets reported that never happened.
+    """
+    recorded = MECHANISMS[mechanism].get("verified_on")
+    if not recorded or not client_version:
+        return False
+    return recorded == client_version
+
+
+def verification_note(mechanism: str, client_version: str | None) -> str:
+    recorded = MECHANISMS[mechanism].get("verified_on")
+    if not recorded:
+        return "never verified on any version; a probe is required"
+    if not client_version:
+        return (f"verified on Claude Code {recorded}, but this client's version could not be "
+                f"read. Treated as unverified: probe one entry first.")
+    if recorded == client_version:
+        return f"verified on Claude Code {recorded}, which is the version running here"
+    return (f"verified on Claude Code {recorded}, but this client is {client_version}. "
+            f"The evidence has expired: probe one entry and confirm before applying the rest.")
+
+
+# Why a source has no mechanism, in words the user can act on.
+NO_MECHANISM_REASON = {
+    "plugin": (
+        "plugin skills cannot be disabled individually: the client locks them "
+        "('locked by plugin' in /skills) and skillOverrides does not reach them, "
+        "by either the bare or the qualified name. The only lever is the whole "
+        "plugin, via /plugin or enabledPlugins — which also removes its hooks "
+        "and MCP servers. Propose that trade explicitly; never apply it silently."
+    ),
 }
 
 
@@ -244,7 +308,8 @@ def choose_mechanism(entry: dict) -> str | None:
     return None
 
 
-def build_plan(inventory: dict, classification: list[dict]) -> dict:
+def build_plan(inventory: dict, classification: list[dict],
+               client_version: str | None = None) -> dict:
     by_name = {e["name"]: e for e in inventory["entries"]}
     actions, proposals = [], []
 
@@ -260,10 +325,26 @@ def build_plan(inventory: dict, classification: list[dict]) -> dict:
             proposals.append({"name": item["name"], "reason": str(refusal)})
             continue
 
+        # The client's own listing outranks every inference here. When it says
+        # an entry is locked, no mechanism reaches it, whatever its source
+        # looks like on disk. Planning it anyway is how a block worth thousands
+        # of tokens gets presented, approved, and found inapplicable two
+        # restarts later.
+        if entry.get("locked_by_client"):
+            proposals.append({
+                "name": item["name"],
+                "reason": ("the client's skill listing reports this entry as locked, so no "
+                           "mechanism here can switch it off individually. Its only lever is "
+                           "whatever owns it — for a plugin skill, the whole plugin."),
+            })
+            continue
+
         mechanism = choose_mechanism(entry)
         if mechanism is None:
             proposals.append({"name": item["name"],
-                              "reason": f"no mechanism covers source '{entry['source']}'"})
+                              "reason": NO_MECHANISM_REASON.get(
+                                  entry["source"],
+                                  f"no mechanism covers source '{entry['source']}'")})
             continue
         spec = MECHANISMS[mechanism]
         actions.append({
@@ -272,7 +353,8 @@ def build_plan(inventory: dict, classification: list[dict]) -> dict:
             "source": entry["source"],
             "target": entry.get("real_path") or entry.get("link_path"),
             "mechanism": mechanism,
-            "mechanism_verified": spec["verified"],
+            "mechanism_verified": is_verified(mechanism, client_version),
+            "mechanism_verification": verification_note(mechanism, client_version),
             "loses_manual_invocation": not spec["keeps_manual_invocation"],
             "warning": (None if spec["keeps_manual_invocation"] else
                         "All-or-nothing: once applied you cannot invoke this entry manually either."),
@@ -292,6 +374,7 @@ def build_plan(inventory: dict, classification: list[dict]) -> dict:
                 "block": source,
                 "mechanism": entries[0]["mechanism"],
                 "mechanism_verified": entries[0]["mechanism_verified"],
+                "mechanism_verification": entries[0]["mechanism_verification"],
                 "entry_count": len(entries),
                 "estimated_saving": {
                     "value": sum((e["saving"] or {}).get("value") or 0 for e in entries),
@@ -313,7 +396,7 @@ def build_plan(inventory: dict, classification: list[dict]) -> dict:
 # --------------------------------------------------------------------------
 
 def apply_plan(plan: dict, config: Path, *, approved: set[str], verified: set[str],
-               confirm: bool) -> dict:
+               confirm: bool, client_version: str | None = None) -> dict:
     selected = [
         action
         for block in plan["blocks"] if block["block"] in approved
@@ -325,13 +408,13 @@ def apply_plan(plan: dict, config: Path, *, approved: set[str], verified: set[st
 
     # A mechanism nobody has confirmed on this machine gets exactly one probe.
     for mechanism in {a["mechanism"] for a in selected}:
-        spec = MECHANISMS[mechanism]
         count = sum(1 for a in selected if a["mechanism"] == mechanism)
-        if not spec["verified"] and mechanism not in verified and count > 1:
+        if not is_verified(mechanism, client_version) and mechanism not in verified and count > 1:
             raise Refusal(
                 f"mechanism '{mechanism}' is not verified on this machine and {count} entries "
-                f"would use it. Run a probe on a single entry, restart, confirm the saving, "
-                f"then re-run with --verified {mechanism}."
+                f"would use it ({verification_note(mechanism, client_version)}). Run a probe "
+                f"on a single entry, restart, confirm the saving, then re-run with "
+                f"--verified {mechanism}."
             )
 
     if not confirm:
@@ -345,9 +428,21 @@ def apply_plan(plan: dict, config: Path, *, approved: set[str], verified: set[st
     for action in selected:
         target = Path(action["target"]) if action["target"] else settings_path
         try:
-            assert_not_plugin_cache(target)
-            if action["mechanism"] == "disable-model-invocation":
+            # Guard the file this mechanism actually writes to, not the entry's
+            # own file. Checking the target unconditionally used to refuse every
+            # skill-override-off on a plugin skill — whose write goes to
+            # settings.json — with "refusing to write inside a plugin cache",
+            # killing a whole approved block over a file nobody was touching.
+            #
+            # Both guardrails belong here, for *every* mechanism that touches the
+            # entry's own file. assert_repo_safe used to sit inside the
+            # disable-model-invocation branch alone, which left unlink-agent
+            # free to shutil.move a tracked agent out of a dirty repository —
+            # exactly the loss the guardrail exists to prevent.
+            if MECHANISMS[action["mechanism"]].get("writes_to_entry_file", True):
+                assert_not_plugin_cache(target)
                 assert_repo_safe(target)
+            if action["mechanism"] == "disable-model-invocation":
                 copy = backup.save(target)
                 result = apply_disable_model_invocation(target)
                 undo = (f"cp '{copy}' '{target}'" if copy else
@@ -376,49 +471,164 @@ def apply_plan(plan: dict, config: Path, *, approved: set[str], verified: set[st
 # Logs
 # --------------------------------------------------------------------------
 
-def survey_logs(config: Path, retention_days: int) -> dict:
+def classify_log(relative: Path) -> str:
+    """Say what a log *is*, from its path alone.
+
+    A date cutoff cannot tell a transcript nobody will ever reopen from a
+    session worth resuming, and the two are not mixed evenly. Two shapes are
+    machine-generated and recognisable without opening anything:
+
+    - a subagent transcript, which sits in a `subagents/` directory under its
+      parent session, or is named `agent-<hash>.jsonl`;
+    - a tool's own scratch directory. The project directory name is the project
+      path with its separators flattened, so a dot-directory shows up as a
+      doubled dash: `-home-rei--claude-mem-observer-sessions` is
+      `~/.claude-mem/observer-sessions`, which is not a project at all.
+
+    Everything else is treated as a real session, because the cost of guessing
+    wrong in that direction is losing the user's history.
+    """
+    parts = relative.parts
+    if "subagents" in parts[1:] or relative.name.startswith("agent-"):
+        return "subagent-transcript"
+    if parts and "--" in parts[0]:
+        return "tool-directory"
+    return "session"
+
+
+def scan_logs(config: Path) -> list[dict]:
+    """Walk the log tree exactly once.
+
+    Every survey below reads this list. Costing each retention window used to
+    mean a fresh walk per window plus one for the breakdown — six passes over a
+    tree that reached 10,546 files on a real installation.
+    """
     projects = config / "projects"
+    if not projects.is_dir():
+        return []
+    scanned = []
+    for log in projects.rglob("*.jsonl"):
+        try:
+            stat = log.stat()
+        except OSError:
+            continue
+        relative = log.relative_to(projects)
+        scanned.append({
+            "path": str(log),
+            "mtime": stat.st_mtime,
+            "bytes": stat.st_size,
+            "project": relative.parts[0] if relative.parts else "",
+            "category": classify_log(relative),
+        })
+    return scanned
+
+
+def survey_logs(config: Path, retention_days: int, scan: list[dict] | None = None) -> dict:
+    scan = scan_logs(config) if scan is None else scan
     cutoff = time.time() - retention_days * 86400
-    old, total_bytes, old_bytes = [], 0, 0
-    if projects.is_dir():
-        # Recursive: subagent logs live one level deeper than session logs.
-        for log in projects.rglob("*.jsonl"):
-            try:
-                stat = log.stat()
-            except OSError:
-                continue
-            total_bytes += stat.st_size
-            if stat.st_mtime < cutoff:
-                old.append(log)
-                old_bytes += stat.st_size
+    old = [row for row in scan if row["mtime"] < cutoff]
+    by_category: dict[str, dict] = {}
+    for row in old:
+        bucket = by_category.setdefault(row["category"], {"file_count": 0, "bytes": 0})
+        bucket["file_count"] += 1
+        bucket["bytes"] += row["bytes"]
     return {
         "retention_days": retention_days,
         "cutoff": (datetime.now() - timedelta(days=retention_days)).date().isoformat(),
-        "total_bytes": {"value": total_bytes, "basis": "measured", "method": "stat"},
-        "reclaimable_bytes": {"value": old_bytes, "basis": "measured", "method": "stat"},
+        "total_bytes": {"value": sum(r["bytes"] for r in scan),
+                        "basis": "measured", "method": "stat"},
+        "reclaimable_bytes": {"value": sum(r["bytes"] for r in old),
+                              "basis": "measured", "method": "stat"},
         "file_count": {"value": len(old), "basis": "measured", "method": "stat"},
+        "by_category": by_category,
         "consequence": "Sessions older than the retention window can no longer be resumed.",
-        "files": [str(p) for p in old],
+        "files": [r["path"] for r in old],
     }
 
 
-def survey_retention_options(config: Path, windows: tuple[int, ...] = RETENTION_WINDOWS) -> dict:
+def survey_machine_generated(scan: list[dict]) -> dict:
+    """Cost the cleanup that destroys none of the user's history.
+
+    The right recommendation is usually not a date window at all. On one
+    installation the 7-day window covered 10,546 files, of which 10,257 — 97
+    percent, 487 MB — were subagent transcripts written by a memory plugin,
+    while the remaining 289 were the user's own sessions and included every
+    session of two recent projects. Deleting only the machine-generated files
+    freed most of the space and cost nothing.
+    """
+    targets = [r for r in scan if r["category"] != "session"]
+    return {
+        "file_count": {"value": len(targets), "basis": "measured", "method": "stat"},
+        "reclaimable_bytes": {"value": sum(r["bytes"] for r in targets),
+                              "basis": "measured", "method": "stat"},
+        "categories": sorted({r["category"] for r in targets}),
+        "share_of_all_logs_percent": (
+            round(100 * len(targets) / len(scan), 1) if scan else 0.0
+        ),
+        "consequence": "No user session is touched; these transcripts cannot be resumed anyway.",
+        "files": [r["path"] for r in targets],
+    }
+
+
+def survey_by_project(retention_days: int, scan: list[dict]) -> list[dict]:
+    """Break a window down per project directory, saying what each one holds."""
+    cutoff = time.time() - retention_days * 86400
+    per: dict[str, dict] = {}
+    for row in scan:
+        if row["mtime"] >= cutoff:
+            continue
+        entry = per.setdefault(row["project"], {
+            "project": row["project"], "file_count": 0, "bytes": 0,
+            "session_files": 0, "machine_generated_files": 0,
+        })
+        entry["file_count"] += 1
+        entry["bytes"] += row["bytes"]
+        if row["category"] == "session":
+            entry["session_files"] += 1
+        else:
+            entry["machine_generated_files"] += 1
+    for entry in per.values():
+        entry["mostly_machine_generated"] = (
+            entry["machine_generated_files"] > entry["session_files"]
+        )
+    return sorted(per.values(), key=lambda r: -r["bytes"])
+
+
+def survey_retention_options(config: Path, windows: tuple[int, ...] = RETENTION_WINDOWS,
+                             scan: list[dict] | None = None) -> dict:
     """Show what each retention window would free, so the choice is informed."""
+    scan = scan_logs(config) if scan is None else scan
     options = []
     for days in windows:
-        survey = survey_logs(config, days)
+        survey = survey_logs(config, days, scan)
         options.append({
             "retention_days": days,
             "cutoff": survey["cutoff"],
             "file_count": survey["file_count"],
             "reclaimable_bytes": survey["reclaimable_bytes"],
+            "by_category": survey["by_category"],
         })
-    total = survey_logs(config, 0)["total_bytes"]
+    narrowest = min(windows) if windows else 0
+    targeted = survey_machine_generated(scan)
     return {
-        "total_bytes": total,
+        "total_bytes": {"value": sum(r["bytes"] for r in scan),
+                        "basis": "measured", "method": "stat"},
         "options": options,
+        "machine_generated_only": {k: v for k, v in targeted.items() if k != "files"},
+        "by_project": {
+            "retention_days": narrowest,
+            "rows": survey_by_project(narrowest, scan),
+            "why": "A date cutoff cannot tell a machine-generated transcript from "
+                   "a session worth resuming. Show this breakdown before asking: "
+                   "one directory often holds most of the space and none of the value.",
+        },
+        "widest_window_days": max(windows) if windows else 0,
         "consequence": "Sessions older than the chosen window can no longer be resumed.",
-        "note": "No window is applied by default; the caller must choose one explicitly.",
+        "note": ("No window is applied by default; the caller must choose one explicitly. "
+                 "Compare every window against machine_generated_only first: when that "
+                 "recovers most of the space, recommend it instead of a window."),
+        "no_backup": ("Log deletion is the one step with no entry in the reversal manifest. "
+                      "Say so before it runs, not after."),
     }
 
 
@@ -515,6 +725,42 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
             if (archive / "dup.md").read_text(encoding="utf-8") != "existing":
                 failures.append("the existing archived entry was damaged")
 
+        # A tracked agent in a dirty repository is reported, never moved.
+        # unlink-agent used to skip this check entirely: the file was archived
+        # out of the working tree and the user's uncommitted work went with it.
+        repo = root / "repo"
+        (repo / ".claude" / "agents").mkdir(parents=True)
+        agent_md = repo / ".claude" / "agents" / "reviewer.md"
+        agent_md.write_text("---\nname: reviewer\ndescription: d\n---\n", encoding="utf-8")
+        def git(*args: str) -> int:
+            return subprocess.run(
+                ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                cwd=str(repo), capture_output=True, text=True, check=False,
+            ).returncode
+        if git("init", "-q") == 0:
+            git("add", "-A")
+            git("commit", "-qm", "seed")
+            (repo / "uncommitted.txt").write_text("work in progress", encoding="utf-8")
+            agent_plan = {"blocks": [{
+                "block": "project", "mechanism": "unlink-agent",
+                "mechanism_verified": True, "entry_count": 1,
+                "estimated_saving": {"value": 50, "basis": "estimated"},
+                "entries": [{"name": "reviewer", "mechanism": "unlink-agent",
+                             "target": str(agent_md), "saving": {"value": 50}}],
+            }]}
+            agent_config = root / "config-agent"
+            agent_config.mkdir()
+            result = apply_plan(agent_plan, agent_config, approved={"project"},
+                                verified=set(), confirm=True)
+            if result["applied"]:
+                failures.append("a tracked agent was archived out of a dirty repository")
+            if not any("uncommitted change" in r["reason"] for r in result["refused"]):
+                failures.append("the dirty-repository refusal did not reach unlink-agent")
+            if not agent_md.exists():
+                failures.append("the agent file was removed despite the refusal")
+        else:
+            print("note: git unavailable, the dirty-repository check was skipped")
+
         # Bulk use of an unverified mechanism is refused.
         plan = {"blocks": [{
             "block": "claude-ai-synced", "mechanism": "skill-override-off",
@@ -527,12 +773,27 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
                  "saving": {"value": 200}},
             ],
         }]}
+        # A client version that does not match the one the mechanism was
+        # measured on makes it unverified again. No flag is flipped here: the
+        # mismatch is the whole point.
+        recorded = MECHANISMS["skill-override-off"]["verified_on"]
         try:
-            apply_plan(plan, config, approved={"claude-ai-synced"}, verified=set(), confirm=True)
-            failures.append("an unverified mechanism was applied in bulk")
+            apply_plan(plan, config, approved={"claude-ai-synced"},
+                       verified=set(), confirm=True, client_version="9.9.9")
+            failures.append("a mechanism was applied in bulk on an unmeasured client version")
         except Refusal as refusal:
             if "probe" not in str(refusal):
                 failures.append("the bulk refusal did not point at the probe")
+            if "9.9.9" not in str(refusal):
+                failures.append("the refusal did not name the version it was measured against")
+
+        # An unknown version is treated as unverified, not as verified.
+        if is_verified("skill-override-off", None):
+            failures.append("an unreadable client version was treated as verified")
+        if not is_verified("skill-override-off", recorded):
+            failures.append("the version the mechanism was measured on was rejected")
+        if recorded not in verification_note("skill-override-off", recorded):
+            failures.append("the verification note did not name the version")
 
         # Nothing is applied without approval, and an unapproved block stays untouched.
         result = apply_plan(plan, config, approved=set(), verified=set(), confirm=True)
@@ -549,6 +810,48 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
             if "before any log is deleted" not in str(refusal):
                 failures.append("the log refusal gave the wrong reason")
 
+        # A log is classified by what it is, not by how old it is. Getting this
+        # wrong is what made "7 days, 879 MB" look like a good offer when
+        # 97 percent of it was machine-generated and the rest was real history.
+        shapes = {
+            "-home-proj/abc/session.jsonl": "session",
+            "-home-proj/abc/subagents/agent-deadbeef.jsonl": "subagent-transcript",
+            "-home-proj/agent-deadbeef.jsonl": "subagent-transcript",
+            "-home-rei--claude-mem-observer-sessions/x.jsonl": "tool-directory",
+            "-home-proj/xyz.jsonl": "session",
+        }
+        for relative, expected in shapes.items():
+            got = classify_log(Path(relative))
+            if got != expected:
+                failures.append(f"classify_log('{relative}') = {got}, expected {expected}")
+
+        # One walk feeds every survey, and the targeted cleanup spares sessions.
+        logs_config = root / "logs-config"
+        projects_dir = logs_config / "projects"
+        (projects_dir / "-home-proj" / "abc" / "subagents").mkdir(parents=True)
+        (projects_dir / "-home-rei--tool-scratch").mkdir(parents=True)
+        (projects_dir / "-home-proj" / "abc" / "session.jsonl").write_text("s" * 100)
+        (projects_dir / "-home-proj" / "abc" / "subagents" / "agent-1.jsonl").write_text("a" * 500)
+        (projects_dir / "-home-rei--tool-scratch" / "t.jsonl").write_text("t" * 400)
+        scan = scan_logs(logs_config)
+        if len(scan) != 3:
+            failures.append(f"the single scan found {len(scan)} logs, expected 3")
+        targeted = survey_machine_generated(scan)
+        if targeted["file_count"]["value"] != 2 or targeted["reclaimable_bytes"]["value"] != 900:
+            failures.append("the machine-generated survey did not match the fixture")
+        if any("session.jsonl" in f for f in targeted["files"]):
+            failures.append("a real session was caught by the machine-generated cleanup")
+        rows = {r["project"]: r for r in survey_by_project(0, scan)}
+        if not rows["-home-rei--tool-scratch"]["mostly_machine_generated"]:
+            failures.append("a tool directory was not flagged as machine-generated")
+        if rows["-home-proj"]["session_files"] != 1:
+            failures.append("the per-project breakdown miscounted real sessions")
+        options = survey_retention_options(logs_config, windows=(7, 30), scan=scan)
+        if options["machine_generated_only"]["reclaimable_bytes"]["value"] != 900:
+            failures.append("the targeted option was missing from the retention survey")
+        if "no entry in the reversal manifest" not in options["no_backup"]:
+            failures.append("the retention survey did not say log deletion is unbacked")
+
         # The all-or-nothing warning is attached where it applies.
         inventory = {"entries": [{"name": "s", "kind": "skill", "source": "claude-ai-synced",
                                   "real_path": str(skill_md),
@@ -557,6 +860,59 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
         action = built["blocks"][0]["entries"][0]
         if not action["loses_manual_invocation"] or not action["warning"]:
             failures.append("the all-or-nothing warning was missing")
+
+        # A plugin skill is propose-only: measured on Claude Code 2.1.278,
+        # skillOverrides does not reach it by any name form. Planning one as an
+        # action would resurrect a block that cost two restarts to disprove.
+        plugin_inv = {"entries": [{
+            "name": "p", "kind": "skill", "source": "plugin",
+            "real_path": str(root / "plugins" / "cache" / "m" / "p" / "1" / "SKILL.md"),
+            "prompt_cost": {"value": 100, "basis": "estimated"}}]}
+        built = build_plan(plugin_inv, [{"name": "p", "action": "suppress", "evidence": []}])
+        if built["blocks"]:
+            failures.append("a plugin skill was planned as an action")
+        elif "locked by plugin" not in str(built["propose_only"]):
+            failures.append("the plugin proposal did not explain why it is locked")
+
+        # An entry the client reports as locked never becomes an action, even
+        # when its source would otherwise have a working mechanism.
+        locked_inv = {"entries": [{
+            "name": "r", "kind": "skill", "source": "claude-ai-synced",
+            "locked_by_client": True, "real_path": str(skill_md),
+            "prompt_cost": {"value": 900, "basis": "estimated"}}]}
+        built = build_plan(locked_inv, [{"name": "r", "action": "suppress", "evidence": []}])
+        if built["blocks"]:
+            failures.append("an entry the client reports as locked was planned as an action")
+        elif "locked" not in str(built["propose_only"]):
+            failures.append("the locked proposal did not say why it cannot be applied")
+
+        # A built-in skill exists nowhere on disk, so it arrives with no path.
+        # skillOverrides still reaches it, and the write lands in settings.json.
+        builtin_inv = {"entries": [{
+            "name": "pdf", "kind": "skill", "source": "built-in", "real_path": None,
+            "link_path": None, "prompt_cost": {"value": 420, "basis": "measured"}}]}
+        built = build_plan(builtin_inv, [{"name": "pdf", "action": "suppress", "evidence": []}])
+        if not built["blocks"]:
+            failures.append("a built-in skill produced no action, so its mechanism is unreachable")
+        elif built["blocks"][0]["entries"][0]["mechanism"] != "skill-override-off":
+            failures.append("a built-in skill was not routed to skillOverrides")
+
+        # The plugin-cache guardrail must not fire for a mechanism that writes
+        # to settings.json. It used to, and it killed an approved block.
+        synced = {"entries": [{
+            "name": "q", "kind": "skill", "source": "claude-ai-synced",
+            "real_path": str(root / "plugins" / "cache" / "m" / "q" / "1" / "SKILL.md"),
+            "prompt_cost": {"value": 100, "basis": "estimated"}}]}
+        built = build_plan(synced, [{"name": "q", "action": "suppress", "evidence": []}])
+        # Its own config dir: backup directories are named by the second, and an
+        # earlier apply in this test already claimed one.
+        fresh = root / "config2"
+        fresh.mkdir()
+        (fresh / "settings.json").write_text("{}", encoding="utf-8")
+        result = apply_plan(built, fresh, approved={"claude-ai-synced"},
+                            verified={"skill-override-off"}, confirm=True)
+        if result["refused"]:
+            failures.append("the plugin-cache guardrail fired on a settings.json write")
 
     for line in failures:
         print(f"FAIL {line}")
@@ -568,10 +924,18 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
     print("  write inside a plugin cache      -> refused")
     print("  protected kinds                  -> refused (instructions, hook, mcp-server)")
     print("  archive over an existing entry   -> refused, existing entry intact")
-    print("  unverified mechanism in bulk     -> refused, probe required")
+    print("  agent tracked in a dirty repo    -> refused, file left in place")
+    print("  mechanism on another version     -> unverified again, probe required")
+    print("  unreadable client version        -> treated as unverified")
     print("  unapproved block                 -> not applied")
     print("  log deletion without usage data  -> refused")
+    print("  log classification               -> session / subagent / tool directory")
+    print("  targeted cleanup                 -> spares every real session, one walk")
     print("  all-or-nothing warning           -> present")
+    print("  plugin skill                     -> propose-only, locked by plugin")
+    print("  entry locked in /skills          -> propose-only, never planned")
+    print("  built-in skill                   -> routed to skillOverrides")
+    print("  settings.json write from a cache -> allowed, guardrail not misfired")
     return 0
 
 
@@ -591,8 +955,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--approve", default="", help="comma-separated block names")
     parser.add_argument("--exclude", default="", help="comma-separated entry names to skip")
     parser.add_argument("--verified", default="", help="comma-separated verified mechanisms")
+    parser.add_argument("--client-version",
+                        help="override the detected Claude Code version; a mechanism counts "
+                             "as verified only on the version it was measured against")
     parser.add_argument("--retention-days", type=int, default=None,
                         help="required to delete; omit to see what each window would free")
+    parser.add_argument("--machine-generated-only", action="store_true",
+                        help="delete only subagent transcripts and tool directories, "
+                             "at any age; no user session is touched")
     parser.add_argument("--usage-report")
     parser.add_argument("--confirm", action="store_true", help="actually write; default is dry run")
     parser.add_argument("--self-test", action="store_true")
@@ -601,13 +971,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_test:
         return self_test()
 
+    client_version = args.client_version or detect_client_version()
+
     try:
         if args.command == "plan":
             inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
             classification = json.loads(Path(args.classification).read_text(encoding="utf-8"))
             if isinstance(classification, dict):
                 classification = classification.get("classification", [])
-            print(json.dumps(build_plan(inventory, classification), indent=2))
+            plan = build_plan(inventory, classification, client_version)
+            plan["client_version"] = {
+                "value": client_version,
+                "basis": "measured" if client_version else "unavailable",
+                "method": "claude --version",
+            }
+            print(json.dumps(plan, indent=2))
         elif args.command == "probe":
             inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
             entry = next(e for e in inventory["entries"] if e["name"] == args.entry)
@@ -621,7 +999,8 @@ def main(argv: list[str] | None = None) -> int:
             }]}
             config = Path(args.config or inventory["paths"]["config_dir"])
             result = apply_plan(plan, config, approved={entry["source"]},
-                                verified=set(), confirm=args.confirm)
+                                verified=set(), confirm=args.confirm,
+                                client_version=client_version)
             result["next_step"] = ("Restart Claude Code, run the context breakdown again and "
                                    "confirm the saving before applying the rest.")
             print(json.dumps(result, indent=2))
@@ -632,18 +1011,33 @@ def main(argv: list[str] | None = None) -> int:
             approved = {b for b in args.approve.split(",") if b}
             verified = {m for m in args.verified.split(",") if m}
             print(json.dumps(apply_plan(plan, config, approved=approved,
-                                        verified=verified, confirm=args.confirm), indent=2))
+                                        verified=verified, confirm=args.confirm,
+                                        client_version=client_version), indent=2))
         elif args.command == "logs":
             config = Path(args.config) if args.config else Path.home() / ".claude"
+            scan = scan_logs(config)
+            if args.machine_generated_only:
+                # No date cutoff: what this deletes is defined by what the file
+                # is, not by how old it is, so no user session can be caught.
+                survey = survey_machine_generated(scan)
+                survey["reclaimable_bytes"] = survey["reclaimable_bytes"]
+                report = {k: v for k, v in survey.items() if k != "files"}
+                report["cleanup"] = clean_logs(
+                    survey,
+                    usage_report=Path(args.usage_report) if args.usage_report else None,
+                    confirm=args.confirm,
+                )
+                print(json.dumps(report, indent=2))
+                return 0
             if args.retention_days is None:
                 if args.confirm:
                     raise Refusal(
                         "no retention window chosen. Review the options below and pass "
                         "--retention-days explicitly; there is no default."
                     )
-                print(json.dumps(survey_retention_options(config), indent=2))
+                print(json.dumps(survey_retention_options(config, scan=scan), indent=2))
                 return 0
-            survey = survey_logs(config, args.retention_days)
+            survey = survey_logs(config, args.retention_days, scan)
             report = {k: v for k, v in survey.items() if k != "files"}
             if args.usage_report or args.confirm:
                 report["cleanup"] = clean_logs(

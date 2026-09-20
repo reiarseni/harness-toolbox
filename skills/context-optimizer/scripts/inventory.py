@@ -407,6 +407,9 @@ def build_inventory(config: Path, project: Path, *, measure_hooks: bool = False)
             "detected": True,
         },
         "entries": entries,
+        # Carried through so a later stage can tell whether a built-in skill
+        # seen only in the pasted listing is already switched off.
+        "skill_overrides": overrides,
         "totals": {
             "entry_count": len(entries),
             "startup_prompt_cost": {
@@ -423,6 +426,120 @@ def build_inventory(config: Path, project: Path, *, measure_hooks: bool = False)
     }
 
 
+# --------------------------------------------------------------------------
+# Self-test
+# --------------------------------------------------------------------------
+
+def self_test() -> int:
+    """Build a throwaway installation on disk and inventory it.
+
+    The two things worth pinning down are the ones a caller acts on: whether an
+    entry loads at startup, and where its content really lives. A skill
+    directory is usually a symlink into a repository, and the cost, the git
+    state and every later edit belong to the target, not to the link.
+    """
+    import tempfile
+
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        config = root / "config"
+        project = root / "project"
+        (config / "skills").mkdir(parents=True)
+        project.mkdir()
+
+        def write_skill(directory: Path, name: str, *, quiet: bool = False) -> None:
+            directory.mkdir(parents=True, exist_ok=True)
+            quiet_key = "disable-model-invocation: true\n" if quiet else ""
+            (directory / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Does {name} things.\n{quiet_key}---\n\nbody\n",
+                encoding="utf-8")
+
+        write_skill(config / "skills" / "normal", "normal")
+        write_skill(config / "skills" / "quiet", "quiet", quiet=True)
+        write_skill(config / "skills" / "overridden", "overridden")
+
+        # A skill that lives in a repository and is linked into the config dir.
+        external = root / "repo" / "skills" / "linked"
+        write_skill(external, "linked")
+        (config / "skills" / "linked").symlink_to(external, target_is_directory=True)
+
+        (config / "settings.json").write_text(
+            json.dumps({"skillOverrides": {"overridden": "off"}}), encoding="utf-8")
+
+        (config / "CLAUDE.md").write_text("# Global\n\n@RTK.md\n", encoding="utf-8")
+        (config / "RTK.md").write_text("# RTK\n\nimported content\n", encoding="utf-8")
+
+        inventory = build_inventory(config, project)
+        by_name = {e["name"]: e for e in inventory["entries"]}
+
+        for name in ("normal", "quiet", "overridden", "linked"):
+            if name not in by_name:
+                failures.append(f"the fixture skill '{name}' was not found")
+        if failures:
+            for line in failures:
+                print(f"FAIL {line}")
+            return 1
+
+        # disable-model-invocation keeps an entry off the startup prompt.
+        if not by_name["normal"]["loads_at_startup"]:
+            failures.append("an ordinary skill was reported as not loading at startup")
+        if by_name["quiet"]["loads_at_startup"]:
+            failures.append("disable-model-invocation did not take the entry off startup")
+        if not by_name["quiet"]["user_invocable_only"]:
+            failures.append("the disable-model-invocation frontmatter key was not parsed")
+
+        # skillOverrides has the same effect, by a different route.
+        if not by_name["overridden"]["disabled_by_override"]:
+            failures.append("a skillOverrides entry was not detected")
+        if by_name["overridden"]["loads_at_startup"]:
+            failures.append("an overridden skill was still counted as loading")
+
+        # A symlink is resolved to the file that actually holds the content.
+        linked = by_name["linked"]
+        if not linked["is_symlink"]:
+            failures.append("a linked skill was not flagged as a symlink")
+        if Path(linked["real_path"]) != (external / "SKILL.md").resolve():
+            failures.append(f"the symlink was not resolved: {linked['real_path']}")
+        if Path(linked["link_path"]) == Path(linked["real_path"]):
+            failures.append("the link path and the real path were not kept apart")
+
+        # An @import chain is followed, and each file is measured once.
+        instructions = [e for e in inventory["entries"] if e["kind"] == "instructions"]
+        names = {e["name"] for e in instructions}
+        if names != {"CLAUDE.md", "RTK.md"}:
+            failures.append(f"the import chain resolved to {sorted(names)}")
+        else:
+            imported = next(e for e in instructions if e["name"] == "RTK.md")
+            if imported["imported_by"] != str((config / "CLAUDE.md").resolve()):
+                failures.append("the imported file does not record what imported it")
+
+        # The total counts only what actually loads.
+        total = inventory["totals"]["startup_prompt_cost"]
+        excluded = (by_name["quiet"]["prompt_cost"]["value"]
+                    + by_name["overridden"]["prompt_cost"]["value"])
+        recomputed = sum(
+            e["prompt_cost"]["value"] for e in inventory["entries"]
+            if isinstance(e.get("prompt_cost", {}).get("value"), int)
+        )
+        if total["value"] != recomputed - excluded:
+            failures.append("the startup total did not exclude the entries that do not load")
+        if total["basis"] != "estimated":
+            failures.append("a byte-derived total was not labelled estimated")
+
+    for line in failures:
+        print(f"FAIL {line}")
+    if failures:
+        return 1
+    print("self-test: all checks passed")
+    print("  disable-model-invocation      -> entry off the startup prompt")
+    print("  skillOverrides off            -> entry off the startup prompt")
+    print("  symlinked skill               -> resolved to its real file, link path kept")
+    print("  CLAUDE.md @import chain       -> followed, importer recorded")
+    print("  startup total                 -> excludes what does not load, labelled estimated")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", help="configuration directory (detected when omitted)")
@@ -430,7 +547,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--measure-hooks", action="store_true",
                         help="execute context-injecting hooks to measure their real output")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a table")
+    parser.add_argument("--self-test", action="store_true", help="run the built-in fixtures")
     args = parser.parse_args(argv)
+
+    if args.self_test:
+        return self_test()
 
     config = detect_config_dir(args.config)
     if config is None:
