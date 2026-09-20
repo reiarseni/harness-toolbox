@@ -162,8 +162,22 @@ def collect_skills(config: Path, project: Path) -> list[dict]:
                 entries.append(skill_entry(skill_md, "user-global"))
         synced = skills_root / "synced"
         if synced.is_dir():
+            # Synced skills are filed under one bucket per account or
+            # organisation, and the same skill is commonly present in several
+            # of them, byte for byte. The client registers the name once; a
+            # naive walk counts it once per bucket. On a live installation that
+            # turned 12 synced skills into 24 and would have doubled the
+            # estimated saving for the whole block.
+            seen: dict[str, dict] = {}
             for skill_md in sorted(synced.glob("*/*/SKILL.md")):
-                entries.append(skill_entry(skill_md, "claude-ai-synced"))
+                entry = skill_entry(skill_md, "claude-ai-synced")
+                first = seen.get(entry["name"])
+                if first is None:
+                    entry["duplicate_copies"] = []
+                    seen[entry["name"]] = entry
+                    entries.append(entry)
+                else:
+                    first["duplicate_copies"].append(str(skill_md))
 
     for plugin_id in enabled_plugins(config):
         plugin_name, _, marketplace = plugin_id.partition("@")
@@ -455,6 +469,10 @@ def self_test() -> int:
                 f"---\nname: {name}\ndescription: Does {name} things.\n{quiet_key}---\n\nbody\n",
                 encoding="utf-8")
 
+        # The same synced skill filed under two buckets is one skill, not two.
+        for bucket in ("bucket-a", "bucket-b"):
+            write_skill(config / "skills" / "synced" / bucket / "shared", "shared")
+
         write_skill(config / "skills" / "normal", "normal")
         write_skill(config / "skills" / "quiet", "quiet", quiet=True)
         write_skill(config / "skills" / "overridden", "overridden")
@@ -495,6 +513,15 @@ def self_test() -> int:
         if by_name["overridden"]["loads_at_startup"]:
             failures.append("an overridden skill was still counted as loading")
 
+        # One synced skill across two buckets counts once, and the duplicate is
+        # recorded rather than dropped silently. Counting it twice doubled a
+        # whole block's estimated saving on a live installation.
+        shared = [e for e in inventory["entries"] if e["name"] == "shared"]
+        if len(shared) != 1:
+            failures.append(f"a synced skill in two buckets produced {len(shared)} entries")
+        elif len(shared[0].get("duplicate_copies", [])) != 1:
+            failures.append("the duplicate synced copy was not recorded")
+
         # A symlink is resolved to the file that actually holds the content.
         linked = by_name["linked"]
         if not linked["is_symlink"]:
@@ -532,6 +559,7 @@ def self_test() -> int:
     if failures:
         return 1
     print("self-test: all checks passed")
+    print("  synced skill in two buckets   -> counted once, duplicate recorded")
     print("  disable-model-invocation      -> entry off the startup prompt")
     print("  skillOverrides off            -> entry off the startup prompt")
     print("  symlinked skill               -> resolved to its real file, link path kept")

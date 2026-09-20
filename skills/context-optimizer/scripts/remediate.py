@@ -206,12 +206,31 @@ def assert_repo_safe(path: Path) -> None:
 class Backup:
     def __init__(self, root: Path) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.dir = root / f"context-optimizer-backup-{stamp}"
         self.entries: list[dict] = []
-        try:
-            self.dir.mkdir(parents=True, exist_ok=False)
-        except OSError as exc:
-            raise Refusal(f"cannot create the backup directory ({exc}); nothing was modified")
+        # The stamp is per second, and approval is taken one block at a time,
+        # so two applies land in the same second routinely. A bare mkdir then
+        # refused the second block with "cannot create the backup directory" —
+        # a refusal that says nothing was modified and is true, but stops a run
+        # that had done nothing wrong. Never reuse a directory: each apply keeps
+        # its own manifest, and merging them would make an undo ambiguous.
+        base = root / f"context-optimizer-backup-{stamp}"
+        candidate, suffix = base, 1
+        while True:
+            try:
+                candidate.mkdir(parents=True, exist_ok=False)
+                self.dir = candidate
+                return
+            except FileExistsError:
+                candidate = base.with_name(f"{base.name}-{suffix}")
+                suffix += 1
+                if suffix > 100:
+                    raise Refusal(
+                        f"cannot find an unused backup directory beside {base}; "
+                        f"nothing was modified"
+                    )
+            except OSError as exc:
+                raise Refusal(
+                    f"cannot create the backup directory ({exc}); nothing was modified")
 
     def save(self, path: Path) -> Path | None:
         if not path.exists() and not path.is_symlink():
@@ -362,19 +381,29 @@ def build_plan(inventory: dict, classification: list[dict],
             "evidence": item.get("evidence", []),
         })
 
-    blocks: dict[str, list[dict]] = {}
+    # Group by source *and* mechanism. Grouping by source alone put a skill
+    # cut with disable-model-invocation in the same block as an agent archived
+    # with unlink-agent, and the block header — taken from the first entry —
+    # then announced a reversible mechanism that keeps manual invocation for a
+    # block containing one that does neither. Approval is taken per block, so
+    # that header is the sentence the user says yes to. It has to be true of
+    # every entry under it.
+    blocks: dict[tuple[str, str], list[dict]] = {}
     for action in actions:
-        blocks.setdefault(action["source"], []).append(action)
+        blocks.setdefault((action["source"], action["mechanism"]), []).append(action)
     for entries in blocks.values():
         entries.sort(key=lambda a: -((a["saving"] or {}).get("value") or 0))
 
     return {
         "blocks": [
             {
-                "block": source,
-                "mechanism": entries[0]["mechanism"],
+                "block": f"{source}/{mechanism}",
+                "source": source,
+                "mechanism": mechanism,
                 "mechanism_verified": entries[0]["mechanism_verified"],
                 "mechanism_verification": entries[0]["mechanism_verification"],
+                "loses_manual_invocation": entries[0]["loses_manual_invocation"],
+                "warning": entries[0]["warning"],
                 "entry_count": len(entries),
                 "estimated_saving": {
                     "value": sum((e["saving"] or {}).get("value") or 0 for e in entries),
@@ -382,7 +411,7 @@ def build_plan(inventory: dict, classification: list[dict],
                 },
                 "entries": entries,
             }
-            for source, entries in sorted(
+            for (source, mechanism), entries in sorted(
                 blocks.items(),
                 key=lambda kv: -sum((e["saving"] or {}).get("value") or 0 for e in kv[1]),
             )
@@ -686,6 +715,16 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
         if skill_md.read_text(encoding="utf-8") != original:
             failures.append("the undo command did not restore the original file")
 
+        # Two applies in the same second each get their own backup directory.
+        # Approval is taken one block at a time, so this is the normal case,
+        # not an edge one; a bare mkdir refused the second block outright.
+        same_second = [Backup(config) for _ in range(3)]
+        if len({b.dir for b in same_second}) != 3:
+            failures.append("two backups in the same second shared a directory")
+        for b in same_second:
+            if not b.dir.is_dir():
+                failures.append(f"a backup directory was not created: {b.dir}")
+
         # A backup that cannot be created stops everything.
         locked = root / "locked"
         locked.mkdir(mode=0o500)
@@ -874,6 +913,31 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
         elif "locked by plugin" not in str(built["propose_only"]):
             failures.append("the plugin proposal did not explain why it is locked")
 
+        # A block is homogeneous in its mechanism, because its header is the
+        # sentence approval is taken on. A user-global skill and a user-global
+        # agent share a source but not a mechanism, and grouping them together
+        # made the header promise "keeps manual invocation" over an entry that
+        # would have been archived.
+        mixed_inv = {"entries": [
+            {"name": "sk", "kind": "skill", "source": "user-global",
+             "real_path": str(skill_md), "prompt_cost": {"value": 200}},
+            {"name": "ag", "kind": "agent", "source": "user-global",
+             "real_path": str(root / "ag.md"), "prompt_cost": {"value": 30}},
+        ]}
+        built = build_plan(mixed_inv, [{"name": "sk", "action": "suppress", "evidence": []},
+                                       {"name": "ag", "action": "suppress", "evidence": []}])
+        for block in built["blocks"]:
+            mechanisms = {e["mechanism"] for e in block["entries"]}
+            if len(mechanisms) != 1:
+                failures.append(f"a block mixed mechanisms: {mechanisms}")
+            if block["mechanism"] not in mechanisms:
+                failures.append("a block header named a mechanism none of its entries use")
+            losses = {e["loses_manual_invocation"] for e in block["entries"]}
+            if block["loses_manual_invocation"] not in losses or len(losses) != 1:
+                failures.append("a block header misstated whether manual invocation is lost")
+        if len(built["blocks"]) != 2:
+            failures.append("a skill and an agent were not separated into their own blocks")
+
         # An entry the client reports as locked never becomes an action, even
         # when its source would otherwise have a working mechanism.
         locked_inv = {"entries": [{
@@ -933,6 +997,7 @@ def self_test() -> int:  # noqa: C901 - a flat list of guardrail checks reads be
     print("  targeted cleanup                 -> spares every real session, one walk")
     print("  all-or-nothing warning           -> present")
     print("  plugin skill                     -> propose-only, locked by plugin")
+    print("  block grouping                   -> one mechanism per block, header true")
     print("  entry locked in /skills          -> propose-only, never planned")
     print("  built-in skill                   -> routed to skillOverrides")
     print("  settings.json write from a cache -> allowed, guardrail not misfired")

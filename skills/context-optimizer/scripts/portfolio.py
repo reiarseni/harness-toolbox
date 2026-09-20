@@ -28,11 +28,20 @@ from pathlib import Path
 
 # A bare name matches far too much: "do" would hit "/doctor" and "/docs".
 # An invocation is a slash command, a Skill() call, or a skill field in a log.
+#
+# An agent is invoked differently from a skill, and forgetting that is not a
+# small error: an agent has no usage counter to fall back on, and its mechanism
+# (unlink-agent) does not keep manual invocation. A real run against a live
+# installation proposed deleting four agents that the logs showed had been
+# used — security-auditor 5 times — because no template here matched
+# `"subagent_type": "<name>"`, which is how an agent is actually called.
 INVOCATION_TEMPLATES = (
     r'"display"\s*:\s*"/{name}(?![\w-])',
     r'Skill\(\s*"?{name}"?\s*\)',
     r'"skill"\s*:\s*"(?:[\w-]+:)?{name}"',
     r'skill:\s*"(?:[\w-]+:)?{name}"',
+    r'"subagent_type"\s*:\s*"{name}"',
+    r'subagent_type:\s*"?{name}(?![\w-])',
     r'(?<![\w-])/{name}(?![\w-])',
 )
 
@@ -98,6 +107,43 @@ def count_mentions(name: str, corpus: str) -> int:
     return len(re.findall(re.escape(name), corpus))
 
 
+# Enough context either side of a name to hold the longest template's prefix
+# and suffix, with room to spare.
+MATCH_WINDOW = 80
+
+
+def count_invocations_windowed(name: str, text: str, pattern: re.Pattern) -> int:
+    """Count invocations by testing only around each literal occurrence.
+
+    Identical in result to `count_invocations`, and the only version fit to run
+    over a real log tree. The templates carry lookarounds, which defeat the
+    literal-prefix optimisation in `re`, so the alternation scans every byte:
+    measured at about 20 MB/s, or roughly 25 seconds per name over 506 MB of
+    session logs. Five agents came to two and three quarter minutes of CPU.
+
+    A prefilter on the name alone does not help, because the system prompt
+    lists every registered entry, so every name appears in every log. What does
+    help is that it appears a handful of times: `str.find` locates those few
+    positions at C speed, and the expensive pattern then runs on 160 characters
+    instead of 14 MB.
+    """
+    total = 0
+    position = 0
+    length = len(name)
+    while True:
+        found = text.find(name, position)
+        if found < 0:
+            return total
+        low = max(0, found - MATCH_WINDOW)
+        window = text[low:found + length + MATCH_WINDOW]
+        offset = found - low
+        for match in pattern.finditer(window):
+            if match.start() <= offset < match.end():
+                total += 1
+                break
+        position = found + length
+
+
 def current_session_id(explicit: str | None = None) -> str | None:
     """Identify the session running this audit, so its own log can be excluded."""
     for candidate in (explicit, os.environ.get("CLAUDE_SESSION_ID")):
@@ -151,6 +197,83 @@ def load_history(config_dir: Path, log_limit: int = 40, skip_seconds: int = 900,
             except OSError:
                 continue
     return "\n".join(parts)
+
+
+def is_session_log(relative: Path) -> bool:
+    """True for a real session transcript, false for machine-generated noise.
+
+    Mirrors `remediate.classify_log`. Usage evidence lives in session logs: an
+    agent invocation is recorded in the transcript of the session that made it,
+    not in the subagent's own transcript, and a tool's scratch directory holds
+    no invocations at all.
+
+    Filtering matters more than it looks. On a live installation the forty most
+    recently modified logs were 38 tool-directory files and 2 real sessions, so
+    a recency-ordered window read 8 MB of scratch and reported every agent as
+    unused — with a mechanism that does not keep manual invocation.
+    """
+    parts = relative.parts
+    if "subagents" in parts[1:] or relative.name.startswith("agent-"):
+        return False
+    return not (parts and "--" in parts[0])
+
+
+def session_log_paths(config_dir: Path, session_id: str | None = None,
+                      skip_seconds: int = 900) -> list[Path]:
+    """Every session log worth scraping, newest first."""
+    projects = config_dir / "projects"
+    if not projects.is_dir():
+        return []
+    now = time.time()
+    found = []
+    for path in projects.rglob("*.jsonl"):
+        if session_id and session_id in str(path):
+            continue
+        if not is_session_log(path.relative_to(projects)):
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime <= skip_seconds:
+            continue
+        found.append((mtime, path))
+    return [path for _, path in sorted(found, key=lambda item: -item[0])]
+
+
+def count_usage_in_files(names: list[str], paths: list[Path],
+                         extra_text: str = "") -> tuple[dict, dict]:
+    """Count invocations and loose mentions for every name, streaming per file.
+
+    Streaming rather than concatenating: the session logs on a real
+    installation came to over 500 MB, and holding that as one string to run a
+    regex over is not a reasonable thing to ask of the machine being audited.
+
+    The invocation count comes from `count_invocations_windowed`, which is what
+    makes the whole pass affordable; see its docstring for the measurements.
+    """
+    invocations = {name: 0 for name in names}
+    mentions = {name: 0 for name in names}
+    if not names:
+        return invocations, mentions
+    patterns = {name: invocation_pattern(name) for name in names}
+
+    def scan(text: str) -> None:
+        for name in names:
+            found = text.count(name)
+            if not found:
+                continue
+            mentions[name] += found
+            invocations[name] += count_invocations_windowed(name, text, patterns[name])
+
+    if extra_text:
+        scan(extra_text)
+    for path in paths:
+        try:
+            scan(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return invocations, mentions
 
 
 def load_usage_counters(config_dir: Path) -> dict[str, dict]:
@@ -267,8 +390,15 @@ def find_near_miss_key(name: str, counters: dict[str, dict]) -> dict | None:
 
 def measure_usage(entries: list[dict], corpus: str, attribution: dict | None,
                   counters: dict[str, dict] | None = None,
-                  startups: int | None = None) -> None:
-    """Attach usage evidence to each entry, in place."""
+                  startups: int | None = None,
+                  scraped_counts: dict | None = None,
+                  mention_counts: dict | None = None) -> None:
+    """Attach usage evidence to each entry, in place.
+
+    `scraped_counts` and `mention_counts`, when supplied, replace the scan of
+    `corpus`. That is how the real run works: the logs are streamed once by
+    `count_usage_in_files` rather than concatenated into one string.
+    """
     counters = counters or {}
     shares = {}
     if attribution:
@@ -280,7 +410,10 @@ def measure_usage(entries: list[dict], corpus: str, attribution: dict | None,
         if entry["kind"] not in ("skill", "command", "agent"):
             continue
         counted = lookup_counter(name, counters)
-        scraped = count_invocations(name, corpus) if name else 0
+        if scraped_counts is not None:
+            scraped = scraped_counts.get(name, 0)
+        else:
+            scraped = count_invocations(name, corpus) if name else 0
         near_miss = None
         if counters and entry["kind"] in ("skill", "command"):
             # The counter covers every skill and command, so its silence is
@@ -295,13 +428,12 @@ def measure_usage(entries: list[dict], corpus: str, attribution: dict | None,
                 invocations = 0
                 horizon = (f" across {startups} recorded startups"
                            if isinstance(startups, int) else "")
-                method = (f"no entry in the client skillUsage counter{horizon}; "
-                          f"log scrape saw {scraped} and was not trusted over it")
+                method = (f"no entry in the client skillUsage counter{horizon}, "
+                          f"which is how the client records 'never invoked'")
                 near_miss = find_near_miss_key(name, counters)
             else:
                 invocations = counted
-                method = (f"client skillUsage counter ({counted}); "
-                          f"log scrape saw {scraped} and was not trusted over it")
+                method = f"client skillUsage counter ({counted}); it is authoritative here"
         elif counted is None:
             invocations = scraped
             method = "delimited match over history and session logs"
@@ -312,7 +444,9 @@ def measure_usage(entries: list[dict], corpus: str, attribution: dict | None,
         entry["usage"] = {
             "invocations": {"value": invocations, "basis": "measured",
                             "method": method},
-            "loose_mentions": {"value": count_mentions(name, corpus) if name else 0,
+            "loose_mentions": {"value": (mention_counts.get(name, 0)
+                                         if mention_counts is not None
+                                         else (count_mentions(name, corpus) if name else 0)),
                                "basis": "measured",
                                "method": "undelimited match, reported only to expose false positives"},
             "attribution_share": shares.get(name, {"value": None, "basis": "unavailable",
@@ -561,7 +695,13 @@ def classify(entries: list[dict], coverage: dict, overlaps: list[dict]) -> list[
         names[0]: tag for tag, names in coverage["covered"].items() if len(names) == 1
     }
     overlapping = {e["name"] for o in overlaps for e in o["entries"]}
-    unrelated = {u["name"] for u in coverage["unrelated_to_stack"]}
+    # With no stack detected, *everything* looks unrelated to it, and saying so
+    # dresses up an absent signal as a finding. A real run on a repository with
+    # no manifests reported "unrelated to the detected stack" for all 62
+    # entries. When there are no tags, the stack signal is simply unavailable.
+    stack_known = bool((coverage.get("stack") or {}).get("tags"))
+    unrelated = ({u["name"] for u in coverage["unrelated_to_stack"]}
+                 if stack_known else set())
 
     results = []
     for entry in entries:
@@ -571,11 +711,19 @@ def classify(entries: list[dict], coverage: dict, overlaps: list[dict]) -> list[
         usage = entry.get("usage", {})
         invocations = usage.get("invocations", {}).get("value", 0) or 0
         share = usage.get("attribution_share", {}).get("value")
-        evidence = [f"invocations={invocations} (measured)"]
+        # Carry the method, not just the number. "invocations=0" reads the same
+        # whether it came from the client's own counter over 664 startups or
+        # from a log scrape that had no pattern for this kind of entry — and
+        # those are not the same claim. The user acts on this line.
+        method = usage.get("invocations", {}).get("method", "")
+        evidence = [f"invocations={invocations} (measured"
+                    + (f"; {method})" if method else ")")]
         if share is not None:
             evidence.append(f"attribution={share}% (measured)")
         else:
             evidence.append("attribution unavailable")
+        if not stack_known:
+            evidence.append("stack signal unavailable: no stack markers found in the project")
 
         near_miss = usage.get("near_miss_counter")
         if near_miss:
@@ -642,6 +790,38 @@ def self_test() -> int:
         failures.append(f"delimited match counted {count_invocations('do', corpus)} for 'do', expected 2")
     if count_mentions("do", corpus) < 5:
         failures.append("loose match should have produced the false positives it is there to expose")
+
+    # An agent is invoked as "subagent_type", never as /name or Skill(name).
+    # Missing this made a live run propose deleting four agents the logs showed
+    # had been used, with a mechanism that does not keep manual invocation.
+    agent_log = ('{"name":"Agent","input":{"subagent_type":"security-auditor"}}\n'
+                 '{"name":"Agent","input":{"subagent_type":"security-auditor"}}\n'
+                 '{"name":"Agent","input":{"subagent_type":"code-reviewer"}}\n')
+    if count_invocations("security-auditor", agent_log) != 2:
+        failures.append("an agent invocation was not counted from subagent_type")
+    if count_invocations("debugger", agent_log) != 0:
+        failures.append("an unused agent picked up an invocation it never had")
+    # The windowed counter must agree with the whole-text one on every shape,
+    # including the near misses the templates exist to exclude. It is a hundred
+    # times faster and is the version the real run uses; a divergence here
+    # would be invisible and would change what gets cut.
+    equivalence = (agent_log + corpus
+                   + '{"display":"/security-auditor-extra"}\n'
+                   + 'prose naming security-auditor with no invocation\n'
+                   + '{"skill":"claude-mem:do"}\nSkill("do")\n/do /doctor\n')
+    for name in ("security-auditor", "do", "code-reviewer", "missing"):
+        pattern = invocation_pattern(name)
+        whole = count_invocations(name, equivalence)
+        windowed = count_invocations_windowed(name, equivalence, pattern)
+        if whole != windowed:
+            failures.append(f"windowed count for '{name}' was {windowed}, whole-text {whole}")
+
+    agents = [{"kind": "agent", "name": "security-auditor", "source": "user-global",
+               "description": "Audit security.", "prompt_cost": {"value": 69},
+               "loads_at_startup": True}]
+    measure_usage(agents, agent_log, None, {"some-skill": {"usageCount": 3}}, 664)
+    if agents[0]["usage"]["invocations"]["value"] != 2:
+        failures.append("an agent was measured against the skill counter instead of the logs")
 
     entries = [
         {"kind": "skill", "name": "release-plan", "source": "user-global",
@@ -786,8 +966,22 @@ def self_test() -> int:
     if "frontend" not in coverage["gaps"]:
         failures.append("an uncovered stack tag was not reported as a gap")
 
+    # With no stack detected, nothing may be called "unrelated to the stack",
+    # and the report must say the signal is missing rather than imply a finding.
+    no_stack = {"tags": [], "evidence": [], "basis": "measured", "method": "test fixture"}
+    blind = assess_coverage(entries, no_stack)
+    blind_verdicts = {c["name"]: c for c in classify(entries, blind, [])}
+    if any("unrelated to the detected stack" in c["reason"] for c in blind_verdicts.values()):
+        failures.append("entries were called unrelated to a stack that was never detected")
+    if not any("stack signal unavailable" in " ".join(c["evidence"])
+               for c in blind_verdicts.values()):
+        failures.append("a missing stack signal was not reported as missing")
+
     classified = classify(entries, coverage, overlaps)
     by_name = {c["name"]: c for c in classified}
+    probe = next(e for e in entries if e["name"] == "packaging-pyqt5")
+    if probe["usage"]["invocations"]["method"] not in by_name["packaging-pyqt5"]["evidence"][0]:
+        failures.append("the evidence line dropped the method behind the number")
     if by_name["release-plan"]["action"] == "suppress":
         failures.append("an entry with 212 invocations was proposed for removal")
     if by_name["packaging-pyqt5"]["action"] != "suppress":
@@ -805,6 +999,8 @@ def self_test() -> int:
     print(f"  namespace never crossed    : 'do' vs 'claude-mem:do' -> no match")
     print(f"  absent counter             : reported as absence, over 664 startups")
     print(f"  stale key from a rename    : reported, kept, never counted")
+    print(f"  agent invocations          : counted from subagent_type")
+    print(f"  no stack detected          : signal reported missing, nothing blamed on it")
     print(f"  own session log            : excluded by id, recursive walk intact")
     print(f"  plugin trade priced        : {priced['trade']}")
     print(f"  overlaps found             : {len(overlaps)}")
@@ -838,8 +1034,25 @@ def main(argv: list[str] | None = None) -> int:
     attribution = json.loads(Path(args.usage).read_text(encoding="utf-8")) if args.usage else None
     startups = load_startup_count(config_dir)
     session = current_session_id(args.session_id)
-    measure_usage(entries, load_history(config_dir, session_id=session), attribution,
-                  load_usage_counters(config_dir), startups)
+    counters = load_usage_counters(config_dir)
+
+    # Scrape only what the counter cannot answer. `measure_usage` already
+    # discards the scraped figure for a skill or command whenever a counter
+    # exists, so scanning for those names is work whose result is thrown away —
+    # and on a real installation the session logs run past 500 MB, which turned
+    # a full scan into minutes. Agents have no counter, so they are scraped
+    # always; skills and commands only when there is no counter at all.
+    kinds_needing_scrape = {"agent"} if counters else {"agent", "skill", "command"}
+    names = sorted({e["name"] for e in entries
+                    if e.get("name") and e["kind"] in kinds_needing_scrape})
+    logs = session_log_paths(config_dir, session_id=session)
+    history = config_dir / "history.jsonl"
+    scraped, mentions = count_usage_in_files(
+        names, logs,
+        extra_text=history.read_text(encoding="utf-8", errors="replace")
+        if history.exists() else "")
+    measure_usage(entries, "", attribution, counters, startups,
+                  scraped_counts=scraped, mention_counts=mentions)
     overlaps = find_overlaps(entries)
     coverage = assess_coverage(entries, detect_stack(project))
     classified = classify(entries, coverage, overlaps)
