@@ -1038,6 +1038,18 @@ def main(argv: list[str] | None = None) -> int:
 
     client_version = args.client_version or detect_client_version()
 
+    # Every command reads the files named by its own flags. Without this the
+    # missing one surfaced as a TypeError from pathlib several frames down,
+    # which says nothing about which flag to pass.
+    required = {
+        "plan": ("inventory", "classification"),
+        "probe": ("inventory", "entry", "mechanism"),
+        "apply": ("plan",),
+    }
+    for flag in required.get(args.command or "", ()):
+        if getattr(args, flag, None) is None:
+            parser.error(f"{args.command} requires --{flag.replace('_', '-')}")
+
     try:
         if args.command == "plan":
             inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
@@ -1050,7 +1062,7 @@ def main(argv: list[str] | None = None) -> int:
                 "basis": "measured" if client_version else "unavailable",
                 "method": "claude --version",
             }
-            print(json.dumps(plan, indent=2))
+            print(json.dumps((plan), indent=2))
         elif args.command == "probe":
             inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
             entry = next(e for e in inventory["entries"] if e["name"] == args.entry)
@@ -1068,7 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
                                 client_version=client_version)
             result["next_step"] = ("Restart Claude Code, run the context breakdown again and "
                                    "confirm the saving before applying the rest.")
-            print(json.dumps(result, indent=2))
+            print(json.dumps((result), indent=2))
         elif args.command == "apply":
             plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
             plan["excluded"] = [n for n in args.exclude.split(",") if n]
@@ -1092,7 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
                     usage_report=Path(args.usage_report) if args.usage_report else None,
                     confirm=args.confirm,
                 )
-                print(json.dumps(report, indent=2))
+                print(json.dumps((report), indent=2))
                 return 0
             if args.retention_days is None:
                 if args.confirm:
@@ -1100,7 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
                         "no retention window chosen. Review the options below and pass "
                         "--retention-days explicitly; there is no default."
                     )
-                print(json.dumps(survey_retention_options(config, scan=scan), indent=2))
+                print(json.dumps((survey_retention_options(config, scan=scan)), indent=2))
                 return 0
             survey = survey_logs(config, args.retention_days, scan)
             report = {k: v for k, v in survey.items() if k != "files"}
@@ -1110,7 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
                     usage_report=Path(args.usage_report) if args.usage_report else None,
                     confirm=args.confirm,
                 )
-            print(json.dumps(report, indent=2))
+            print(json.dumps((report), indent=2))
         else:
             parser.print_help()
             return 1
