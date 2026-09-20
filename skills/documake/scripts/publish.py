@@ -155,6 +155,12 @@ def is_generated(path):
 
 # ---------- wiki pages (gitlab-wiki) ----------
 
+def wiki_page_path(rel, section):
+    """Where a source file is published. The README becomes the section's own landing page
+    (<section>.md), so the natural URL /-/wikis/<section> resolves instead of offering to create it."""
+    return section + ".md" if rel == "README.md" else section + "/" + wiki_slug(rel) + ".md"
+
+
 def wiki_slug(rel):
     """08-modulos/admin-web.md -> Modulos/Admin-web (ASCII, no numeric prefix, capitalised, no .md)."""
     if rel == "README.md":
@@ -230,7 +236,7 @@ def wiki_sidebar(entries, link, title, details=True):
 def wiki_pages(docs, docs_rel, section, source_url, nav):
     """Build every wiki page. Returns ({wiki path.md: content}, {source rel: wiki path.md})."""
     files = all_md(docs)
-    mapping = {f: section + "/" + wiki_slug(f) + ".md" for f in files}
+    mapping = {f: wiki_page_path(f, section) for f in files}
     dup = sorted({n for n in mapping.values() if list(mapping.values()).count(n) > 1})
     if dup:
         sys.exit(f"Renaming produces duplicate page names: {dup}")
@@ -261,7 +267,11 @@ def wiki_pages(docs, docs_rel, section, source_url, nav):
         prev_l = f"← [{labels.get(order[i - 1], order[i - 1])}](/{mapping[order[i - 1]][:-3]})" if i > 0 else ""
         next_l = (f"[{labels.get(order[i + 1], order[i + 1])}](/{mapping[order[i + 1]][:-3]}) →"
                   if i + 1 < len(order) else "")
-        index_l = f"[{index_word}](/{mapping['README.md'][:-3]})" if "README.md" in mapping and f != "README.md" else ""
+        index_t = mapping["README.md"][:-3] if "README.md" in mapping else None
+        shown = {mapping[order[i - 1]][:-3] if i > 0 else None,
+                 mapping[order[i + 1]][:-3] if i + 1 < len(order) else None}
+        index_l = (f"[{index_word}](/{index_t})"
+                   if index_t and f != "README.md" and index_t not in shown else "")
         pager = " · ".join(x for x in (prev_l, index_l, next_l) if x)
         head = f"---\ntitle: {q(title)}\n---\n{GEN} source={src} -->\n\n" + ("[[_TOC_]]\n\n" if long else "")
         foot = "\n\n---\n\n" + (pager + "\n\n" if pager else "") + "<sub>" + NOTICE.get(LANG, NOTICE["en"]).format(src=ref) + "</sub>\n"
@@ -288,6 +298,10 @@ def gitlab_section(docs, docs_rel, out, section, source_url, sidebar_mode, dry, 
                     if fn.endswith(".md"):
                         full = os.path.join(dp, fn)
                         existing[os.path.relpath(full, out)] = full
+    for name in [section] + [l for l in legacy if l != section]:   # the section landing pages
+        full = os.path.join(out, name + ".md")
+        if os.path.isfile(full):
+            existing[name + ".md"] = full
     add, upd, same, delete, conflicts = [], [], [], [], []
     for rel, content in sorted(new.items()):
         if rel not in existing:
@@ -349,7 +363,7 @@ def gitlab_section(docs, docs_rel, out, section, source_url, sidebar_mode, dry, 
             print(f"  {label}: {rel}")
     home = os.path.join(out, "home.md")
     if os.path.isfile(home) and section not in open(home, encoding="utf-8").read():
-        print(f"hint: your wiki home.md doesn't link to the section; add [Documentación](/{section}/Home)")
+        print(f"hint: your wiki home.md doesn't link to the section; add [Documentación](/{section})")
 
 
 def github_rename(rel):

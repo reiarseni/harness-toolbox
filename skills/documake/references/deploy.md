@@ -106,6 +106,9 @@ the wiki belongs to people.
 and breadcrumbs from its **file name**, not from its `# H1`, and serves any URL
 ending in `.md` as plain text. So the publisher, for this target only:
 
+- publishes the README as the section's **own** page (`Documentacion.md`), so
+  `/-/wikis/Documentacion` resolves instead of offering to create it, and its
+  children hang under it;
 - renames to readable ASCII without the numeric prefix — `08-modulos/admin-web.md`
   becomes `Documentacion/Modulos/Admin-web`, so the breadcrumb reads
   "Documentacion / Modulos / Admin web";
@@ -129,7 +132,7 @@ it, changing nothing (`--force` overrides, replacing/removing those pages);
 unchanged pages produce no wiki commit; no changes → no commit; `--section`
 must be a single slug of letters, digits and hyphens.
 
-Tell the user: add a link to `/Documentacion/Home` in their wiki `home.md`
+Tell the user: add a link to `/Documentacion` in their wiki `home.md`
 (the script only hints; it never edits the home).
 
 The CI job republishes when `docs/**` **or `.documake/**`** changes, so a fix to

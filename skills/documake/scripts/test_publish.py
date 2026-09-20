@@ -73,9 +73,13 @@ class PageTests(unittest.TestCase):
 
     def test_paths(self):
         self.assertEqual(sorted(self.pages), [
-            "Documentacion/Flujos/Marca-async.md", "Documentacion/Home.md",
+            "Documentacion.md", "Documentacion/Flujos/Marca-async.md",
             "Documentacion/Meta/Cobertura.md", "Documentacion/Modulos/Admin-web.md",
             "Documentacion/Vision-general.md"])
+
+    def test_section_root_is_a_real_page(self):
+        """/-/wikis/<section> must resolve, not offer to create the page."""
+        self.assertIn("Documentacion.md", self.pages)
 
     def test_front_matter_and_h1_removed(self):
         page = self.pages["Documentacion/Vision-general.md"]
@@ -83,7 +87,7 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("\n# Visión general", page)
 
     def test_home_title_override(self):
-        home = self.pages["Documentacion/Home.md"]
+        home = self.pages["Documentacion.md"]
         self.assertTrue(home.startswith('---\ntitle: "Facecheck"\n---\n'))
         self.assertNotIn("documentación para quien modifica", home.split("<!--", 1)[0])
 
@@ -91,13 +95,15 @@ class PageTests(unittest.TestCase):
         page = self.pages["Documentacion/Vision-general.md"]
         self.assertIn("(/Documentacion/Modulos/Admin-web#rutas)", page)
         self.assertNotIn(".md#", page.split("---", 2)[2].split("Generado")[0])
-        self.assertIn("← [Inicio](/Documentacion/Home) · [Índice](/Documentacion/Home) · "
+        # la anterior ya es el indice: no se repite el enlace
+        self.assertIn("← [Inicio](/Documentacion) · "
                       "[Marca y verificación asíncrona](/Documentacion/Flujos/Marca-async) →", page)
+        self.assertNotIn("[Índice](/Documentacion) · [Índice]", page)
         self.assertIn("Generado desde [`docs/sistema/03-vision-general.md`](https://g/-/blob/main/docs/sistema/03-vision-general.md)", page)
 
     def test_marker_found_after_front_matter(self):
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
-            fh.write(self.pages["Documentacion/Home.md"])
+            fh.write(self.pages["Documentacion.md"])
         try:
             self.assertTrue(publish.is_generated(fh.name))
         finally:
@@ -173,7 +179,7 @@ class SyncTests(unittest.TestCase):
         self.run_sync()
         self.assertFalse(os.path.exists(old))
         self.assertFalse(os.path.isdir(os.path.join(self.wiki, "documentacion-del-proyecto")))
-        self.assertTrue(os.path.isfile(os.path.join(self.wiki, "Documentacion", "Home.md")))
+        self.assertTrue(os.path.isfile(os.path.join(self.wiki, "Documentacion.md")))
 
     def test_aborts_on_hand_edited_legacy_page(self):
         self.write_wiki("documentacion-del-proyecto/notas.md", "escrito a mano\n")
@@ -182,9 +188,9 @@ class SyncTests(unittest.TestCase):
 
     def test_idempotent(self):
         self.run_sync()
-        before = open(os.path.join(self.wiki, "Documentacion", "Home.md"), encoding="utf-8").read()
+        before = open(os.path.join(self.wiki, "Documentacion.md"), encoding="utf-8").read()
         self.run_sync()
-        after = open(os.path.join(self.wiki, "Documentacion", "Home.md"), encoding="utf-8").read()
+        after = open(os.path.join(self.wiki, "Documentacion.md"), encoding="utf-8").read()
         self.assertEqual(before, after)
 
     def test_sidebar_block_replaced_rest_kept(self):
@@ -193,7 +199,7 @@ class SyncTests(unittest.TestCase):
         sb = open(os.path.join(self.wiki, "_sidebar.md"), encoding="utf-8").read()
         self.assertTrue(sb.startswith("Mío"))
         self.assertNotIn("viejo", sb)
-        self.assertIn("[Inicio](/Documentacion/Home)", sb)
+        self.assertIn("[Inicio](/Documentacion)", sb)
 
 
 if __name__ == "__main__":
