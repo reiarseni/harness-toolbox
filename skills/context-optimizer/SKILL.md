@@ -182,6 +182,10 @@ State the verification honestly, in the block's own words: `plan.json` carries
 was measured on and the version running here. **A mechanism measured on another
 version is not verified.** It needs a probe, exactly as an unmeasured one does.
 
+Each block holds exactly one mechanism, so the block header is true of every
+entry under it. Read it out as given — especially `loses_manual_invocation`,
+which is the difference between quietening an entry and archiving it.
+
 Take approval **one block at a time** with AskUserQuestion, and offer to
 exclude individual entries within a block.
 

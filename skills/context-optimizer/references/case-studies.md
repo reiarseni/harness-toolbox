@@ -244,6 +244,74 @@ Two machine-generated shapes are recognisable from the path alone:
 
 ---
 
+## An agent is not invoked the way a skill is
+
+Installation B, found by running the skill against the live machine. Every
+agent was reported `invocations=0` and proposed for deletion. The logs said
+otherwise:
+
+| Agent | Real invocations | Verdict given |
+|---|---:|---|
+| security-auditor | 5 | suppress |
+| code-reviewer | 5 | suppress |
+| architect-reviewer | 2 | suppress |
+| refactoring-specialist | 1 | suppress |
+| debugger | 0 | suppress (correct) |
+
+Two independent causes, both of which had to be fixed:
+
+1. No template matched `"subagent_type": "<name>"`, which is how an agent is
+   actually called. The templates only knew about `/name`, `Skill(name)` and
+   `"skill": "name"`.
+2. The log window was the forty most recently modified files. After the walk
+   became recursive, those forty were 38 files from a memory plugin's scratch
+   directory and 2 real sessions — so the scrape read 8 MB of noise and never
+   saw a session log at all.
+
+This mattered more than the earlier counter incident: an agent has no
+`skillUsage` entry to fall back on, and its mechanism, `unlink-agent`, does not
+keep manual invocation. The entries would have been archived, not merely
+quietened.
+
+## Matching over a real log tree has to be windowed
+
+Installation B, 328 session logs, 506 MB. The invocation templates carry
+lookarounds, which defeat the literal-prefix optimisation in Python's `re`, so
+an alternation scans every byte at about 20 MB/s.
+
+| Approach | CPU |
+|---|---:|
+| One combined regex over every byte | 2 min 45 s |
+| Prefilter on the bare name | no help — see below |
+| Regex only around each literal occurrence | 9 s, whole run |
+
+The bare-name prefilter fails because the system prompt lists every registered
+entry, so every name appears in every log. What does work is that it appears a
+handful of times: `str.find` locates those positions at C speed and the
+expensive pattern then runs on 160 characters instead of 14 MB.
+
+## The same synced skill under two buckets
+
+Installation B. `skills/synced/` held two bucket directories, one per account,
+each containing the same 12 skills byte for byte. The walk counted 24. Any
+saving estimated for that block would have been double the truth.
+
+## A block that mixed two mechanisms
+
+Installation B. Blocks were grouped by source, so a user-global skill cut with
+`disable-model-invocation` shared a block with a user-global agent archived by
+`unlink-agent`. The block header, taken from the first entry, announced a
+reversible mechanism that keeps manual invocation — over an entry that does
+neither. Approval is taken per block, so that header is the sentence the user
+says yes to.
+
+## Two applies in the same second
+
+Installation B. The backup directory is named to the second, and the skill
+prescribes taking approval one block at a time. The second block's apply hit
+`FileExistsError` and was refused with "cannot create the backup directory",
+stopping a run that had done nothing wrong.
+
 ## An unlinked agent could be moved out of a dirty repository
 
 Installation B, found by review rather than by loss. `apply_unlink` never called

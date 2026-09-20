@@ -61,7 +61,21 @@ Match invocations, not mentions:
 
 - `"display":"/<name>"` — the user typed it as a command
 - `Skill(<name>)` or `"skill": "<name>"` — it was invoked as a skill
+- `"subagent_type": "<name>"` — it was invoked as an **agent**
 - `/<name>` with a word boundary on both sides
+
+**An agent is the dangerous case.** It is not invoked the way a skill is, it
+has no `skillUsage` entry to fall back on, and its mechanism does not keep
+manual invocation. Get the pattern wrong and the skill proposes archiving
+agents that are in daily use, with no counter to contradict it — which is
+exactly what a live run did before `subagent_type` was added.
+
+**Scrape session logs only, and scrape all of them.** An agent invocation is
+recorded in the transcript of the session that made the call, not in the
+subagent's own transcript, and a tool's scratch directory holds no invocations
+at all. A recency-ordered window over everything is worse than useless here:
+on one machine the forty most recent logs were 38 scratch files and 2 real
+sessions.
 
 Two failures seen in practice, in opposite directions:
 
