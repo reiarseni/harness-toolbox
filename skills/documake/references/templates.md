@@ -134,9 +134,10 @@ coupled to, **all of them**, grouped by kind.
 | `platform/ci-templates` | this repo consumes it | CI include | `.gitlab-ci.yml` | edit there, then bump `ref` |
 **Not detectable from inside:** which repos consume *this* one. [ASK: who consumes
 this repo? (search the GitLab group for its path)]
-If nothing was found: "No links to other repositories found in .gitmodules, CI
-(include/trigger/needs/images), manifests, Dockerfiles/compose, registries or
-URLs to the same GitLab host."
+If nothing was found, write only the sentence and **no table** (a grid whose one
+row is "(none) | — | —" is noise): "No links to other repositories found in
+.gitmodules, CI (include/trigger/needs/images), manifests, Dockerfiles/compose,
+registries or URLs to the same GitLab host."
 ```
 
 ## `02-structure.md` — abbreviated structure (forced)

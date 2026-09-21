@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires Python 3.12+ (stdlib only) and git. Designed for Claude Code; also works in OpenCode.
 metadata:
   author: reiarseni
-  version: "1.1.0"
+  version: "1.1.1"
 disable-model-invocation: true
 argument-hint: "[repo path] [--lang es|en|<code>] [--publish zensical|vitepress|docsify|gitlab-wiki|github-wiki] [--update] [--only <module>]"
 allowed-tools: Read Glob Grep Bash Agent Write Edit AskUserQuestion
@@ -296,7 +296,7 @@ How to write the three forced docs (details and skeletons in `templates.md`):
   detected link — repo path, direction (consumes / is consumed), kind, evidence,
   how a change spans repos. Group many similar neighbours. The link finder
   cannot see who *consumes this repo*: write it as an ASK marker. If nothing was
-  found, say what was searched. Cross-repo traps (job-token allowlist, pinned
+  found, say what was searched in one sentence, with no table. Cross-repo traps (job-token allowlist, pinned
   `ref`s, submodule bumps) go to `12`.
 - **02 — Tree**: start from the script's tree, keep ≤ 70 lines, annotate each
   line with its role, add nothing that isn't on disk.

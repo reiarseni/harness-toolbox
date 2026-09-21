@@ -482,6 +482,22 @@ def extra_checks(root, docs_dir, pack, meta, md_files, add, marker_re):
                 if cols > 6:
                     add("WARN", doc, n, f"Table with {cols} columns: it overflows a wiki page. Split it, or fold "
                         "the path into the symbol cell")
+        # F4b) a table whose only row says "nothing here": one sentence carries it without the grid
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if not re.match(r"^\s*\|[\s:|-]+\|\s*$", line) or i == 0 or not lines[i - 1].lstrip().startswith("|"):
+                continue
+            rows = []
+            for nxt in lines[i + 1:]:
+                if not nxt.lstrip().startswith("|"):
+                    break
+                rows.append([c.strip() for c in nxt.strip().strip("|").split("|")])
+            if len(rows) == 1 and len(rows[0]) >= 3:
+                cells = rows[0]
+                blank = sum(1 for c in cells if c.strip("`*_ ") in ("", "—", "–", "-", "n/a", "N/A"))
+                if blank >= len(cells) / 2 or re.match(r"^\(.*\)$", cells[0]):
+                    add("WARN", doc, i + 2, "Table with a single placeholder row: say it in one sentence "
+                        "(what was searched, and that nothing was found) and drop the table")
         # F5) how-to steps written into a card or a flow instead of living in the recipes.
         #     Only the "how to modify"/"to change this flow" section counts: a flow's own
         #     "step by step" is the explanation of what happens, not a procedure to follow.
